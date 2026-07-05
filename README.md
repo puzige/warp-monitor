@@ -7,8 +7,9 @@ run the existing recovery flow when WARP disconnects or drifts to another colo.
 The app is packaged as a standard macOS `.app` bundle with a Dock icon, menu bar
 status item, and no external Swift dependencies.
 
-The panel and menu bar menu show WARP latency, realtime upload/download rate,
-and cumulative upload/download traffic for the current tunnel session.
+The panel shows WARP latency, realtime upload/download rate, and cumulative
+upload/download traffic for the current tunnel session. The menu bar menu keeps
+the realtime speed visible without the extra session details.
 
 ## Requirements
 

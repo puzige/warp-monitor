@@ -71,6 +71,26 @@ struct TrafficStats {
         return "↑\(Self.formatRate(uploadBps))  ↓\(Self.formatRate(downloadBps))"
     }
 
+    var uploadRateText: String {
+        guard let uploadBps else { return "--" }
+        return Self.formatRate(uploadBps)
+    }
+
+    var downloadRateText: String {
+        guard let downloadBps else { return "--" }
+        return Self.formatRate(downloadBps)
+    }
+
+    var uploadTotalText: String {
+        guard let bytesSent else { return "--" }
+        return Self.formatBytes(bytesSent)
+    }
+
+    var downloadTotalText: String {
+        guard let bytesReceived else { return "--" }
+        return Self.formatBytes(bytesReceived)
+    }
+
     var latencyText: String {
         guard let latencyMs else { return "--" }
         return "\(latencyMs) ms"
@@ -664,9 +684,11 @@ final class PanelViewController: NSViewController {
     private let warpValue = label("...", size: 12, mono: true)
     private let srValue = label("...", size: 12, mono: true)
     private let coloValue = label("...", size: 12, mono: true)
+    private let uploadRateValue = label("--", size: 21, weight: .bold, mono: true)
+    private let downloadRateValue = label("--", size: 21, weight: .bold, mono: true)
+    private let uploadTotalValue = label("--", size: 11, mono: true)
+    private let downloadTotalValue = label("--", size: 11, mono: true)
     private let latencyValue = label("--", size: 12, mono: true)
-    private let realtimeValue = label("--", size: 12, mono: true)
-    private let cumulativeValue = label("--", size: 12, mono: true)
     private let checkedLabel = label("", size: 10, color: .tertiaryLabelColor)
     private var autoRecoverCheck: NSButton!
     private var recoverBtn: NSButton!
@@ -724,33 +746,34 @@ final class PanelViewController: NSViewController {
         headerCard.addSubview(headerStack)
         pin(headerStack, in: headerCard, inset: 14)
 
-        // Traffic card: realtime first, secondary metrics below it.
-        realtimeValue.font = .monospacedSystemFont(ofSize: 17, weight: .semibold)
-        latencyValue.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
-        cumulativeValue.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
-
+        // Traffic card: two large live dashboard metrics, with quiet session context.
         let trafficCard = CardView()
         let liveCap = label("live traffic", size: 10, color: .secondaryLabelColor)
-        let liveStack = NSStackView(views: [liveCap, realtimeValue])
-        liveStack.orientation = .vertical
-        liveStack.alignment = .leading
-        liveStack.spacing = 4
+        let uploadTile = trafficMetric("↑ Upload", uploadRateValue)
+        let downloadTile = trafficMetric("↓ Download", downloadRateValue)
+        let liveGrid = NSStackView(views: [uploadTile, downloadTile])
+        liveGrid.orientation = .horizontal
+        liveGrid.alignment = .top
+        liveGrid.spacing = 20
 
-        let metricsStack = NSStackView(views: [
-            compactMetricRow("Total", cumulativeValue),
-            compactMetricRow("Latency", latencyValue),
+        let totalLine = NSStackView(views: [
+            secondaryMetric("Session ↑", uploadTotalValue),
+            secondaryMetric("↓", downloadTotalValue),
+            NSView(),
+            secondaryMetric("Ping", latencyValue),
         ])
-        metricsStack.orientation = .vertical
-        metricsStack.alignment = .trailing
-        metricsStack.spacing = 5
+        totalLine.orientation = .horizontal
+        totalLine.alignment = .firstBaseline
+        totalLine.spacing = 10
 
-        let trafficStack = NSStackView(views: [liveStack, NSView(), metricsStack])
-        trafficStack.orientation = .horizontal
-        trafficStack.alignment = .centerY
-        trafficStack.spacing = 12
+        let trafficStack = NSStackView(views: [liveCap, liveGrid, totalLine])
+        trafficStack.orientation = .vertical
+        trafficStack.alignment = .leading
+        trafficStack.spacing = 8
         trafficStack.translatesAutoresizingMaskIntoConstraints = false
         trafficCard.addSubview(trafficStack)
         pin(trafficStack, in: trafficCard, inset: 14)
+        uploadTile.widthAnchor.constraint(equalTo: downloadTile.widthAnchor).isActive = true
 
         // Detail card: WARP / SR / colo rows.
         let detailCard = CardView()
@@ -883,15 +906,25 @@ final class PanelViewController: NSViewController {
         return r
     }
 
-    private func compactMetricRow(_ name: String, _ value: NSTextField) -> NSStackView {
+    private func trafficMetric(_ name: String, _ value: NSTextField) -> NSStackView {
+        let n = label(name, size: 10, weight: .medium, color: .secondaryLabelColor)
+        let r = NSStackView(views: [n, value])
+        r.orientation = .vertical
+        r.alignment = .leading
+        r.spacing = 2
+        r.translatesAutoresizingMaskIntoConstraints = false
+        value.textColor = .labelColor
+        return r
+    }
+
+    private func secondaryMetric(_ name: String, _ value: NSTextField) -> NSStackView {
         let n = label(name, size: 10, color: .secondaryLabelColor)
         let r = NSStackView(views: [n, value])
         r.orientation = .horizontal
         r.alignment = .firstBaseline
-        r.spacing = 8
+        r.spacing = 4
         r.translatesAutoresizingMaskIntoConstraints = false
         n.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        value.alignment = .right
         return r
     }
 
@@ -944,10 +977,14 @@ final class PanelViewController: NSViewController {
         } else {
             latencyValue.textColor = .secondaryLabelColor
         }
-        realtimeValue.stringValue = t.rateText
-        realtimeValue.textColor = t.uploadBps == nil ? .secondaryLabelColor : .labelColor
-        cumulativeValue.stringValue = t.totalText
-        cumulativeValue.textColor = t.bytesSent == nil ? .secondaryLabelColor : .labelColor
+        uploadRateValue.stringValue = t.uploadRateText
+        uploadRateValue.textColor = t.uploadBps == nil ? .secondaryLabelColor : .labelColor
+        downloadRateValue.stringValue = t.downloadRateText
+        downloadRateValue.textColor = t.downloadBps == nil ? .secondaryLabelColor : .labelColor
+        uploadTotalValue.stringValue = t.uploadTotalText
+        uploadTotalValue.textColor = t.bytesSent == nil ? .secondaryLabelColor : .labelColor
+        downloadTotalValue.stringValue = t.downloadTotalText
+        downloadTotalValue.textColor = t.bytesReceived == nil ? .secondaryLabelColor : .labelColor
     }
 
     private func refreshRecoverState() {
@@ -982,9 +1019,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow?
     var statusItem: NSStatusItem!
     private var menuStatusLine: NSMenuItem!
-    private var menuLatencyLine: NSMenuItem!
     private var menuRealtimeLine: NSMenuItem!
-    private var menuCumulativeLine: NSMenuItem!
     private var menuRecover: NSMenuItem!
     private var menuAutoRecover: NSMenuItem!
 
@@ -1024,15 +1059,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuStatusLine = NSMenuItem(title: "Checking...", action: nil, keyEquivalent: "")
         menuStatusLine.isEnabled = false
         menu.addItem(menuStatusLine)
-        menuLatencyLine = NSMenuItem(title: "Latency: --", action: nil, keyEquivalent: "")
-        menuLatencyLine.isEnabled = false
-        menu.addItem(menuLatencyLine)
-        menuRealtimeLine = NSMenuItem(title: "Realtime: --", action: nil, keyEquivalent: "")
+        menuRealtimeLine = NSMenuItem(title: "Speed: --", action: nil, keyEquivalent: "")
         menuRealtimeLine.isEnabled = false
         menu.addItem(menuRealtimeLine)
-        menuCumulativeLine = NSMenuItem(title: "Cumulative: --", action: nil, keyEquivalent: "")
-        menuCumulativeLine.isEnabled = false
-        menu.addItem(menuCumulativeLine)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open WARP Monitor", action: #selector(openPanel), keyEquivalent: "o"))
         menuRecover = NSMenuItem(title: "Recover Now", action: #selector(menuRecoverNow), keyEquivalent: "r")
@@ -1065,11 +1094,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func refreshTrafficItems() {
-        guard menuLatencyLine != nil else { return }
+        guard menuRealtimeLine != nil else { return }
         let t = daemon.traffic
-        menuLatencyLine.title = "Latency: \(t.latencyText)"
-        menuRealtimeLine.title = "Realtime: \(t.rateText)"
-        menuCumulativeLine.title = "Cumulative: \(t.totalText)"
+        menuRealtimeLine.title = "Speed: \(t.rateText)"
     }
 
     // MARK: menu actions
