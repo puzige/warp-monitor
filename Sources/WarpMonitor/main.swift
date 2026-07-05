@@ -44,6 +44,61 @@ struct WarpStatus {
     }
 }
 
+struct TrafficStats {
+    var bytesSent: UInt64?
+    var bytesReceived: UInt64?
+    var uploadBps: Double?
+    var downloadBps: Double?
+    var latencyMs: Int?
+    var timestamp: Date?
+
+    static func empty(at timestamp: Date = Date()) -> TrafficStats {
+        TrafficStats(bytesSent: nil,
+                     bytesReceived: nil,
+                     uploadBps: nil,
+                     downloadBps: nil,
+                     latencyMs: nil,
+                     timestamp: timestamp)
+    }
+
+    var totalText: String {
+        guard let bytesSent, let bytesReceived else { return "--" }
+        return "Up \(Self.formatBytes(bytesSent)) / Down \(Self.formatBytes(bytesReceived))"
+    }
+
+    var rateText: String {
+        guard let uploadBps, let downloadBps else { return "--" }
+        return "Up \(Self.formatRate(uploadBps)) / Down \(Self.formatRate(downloadBps))"
+    }
+
+    var latencyText: String {
+        guard let latencyMs else { return "--" }
+        return "\(latencyMs) ms"
+    }
+
+    private static func formatRate(_ bytesPerSecond: Double) -> String {
+        let safeValue = max(0, bytesPerSecond)
+        return "\(formatBytes(UInt64(safeValue.rounded())))/s"
+    }
+
+    private static func formatBytes(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var unitIndex = 0
+        while value >= 1024 && unitIndex < units.count - 1 {
+            value /= 1024
+            unitIndex += 1
+        }
+        if unitIndex == 0 {
+            return "\(Int(value)) \(units[unitIndex])"
+        }
+        if value < 10 {
+            return String(format: "%.1f %@", value, units[unitIndex])
+        }
+        return String(format: "%.0f %@", value, units[unitIndex])
+    }
+}
+
 // MARK: - Shell
 
 enum Shell {
@@ -79,29 +134,40 @@ final class WarpDaemon {
     }
 
     private(set) var status = WarpStatus(warp: "unknown", sr: "unknown", colo: "unknown", timestamp: Date())
+    private(set) var traffic = TrafficStats.empty()
     private(set) var logEntries: [(Date, String, Tag)] = []
     private(set) var recovering = false
 
     var autoRecover = true
     private var statusObservers: [() -> Void] = []
+    private var trafficObservers: [() -> Void] = []
     private var logObservers: [() -> Void] = []
     private var recoverObservers: [() -> Void] = []
     func onStatusChange(_ f: @escaping () -> Void) { statusObservers.append(f) }
+    func onTrafficChange(_ f: @escaping () -> Void) { trafficObservers.append(f) }
     func onLogChange(_ f: @escaping () -> Void) { logObservers.append(f) }
     func onRecoverStateChange(_ f: @escaping () -> Void) { recoverObservers.append(f) }
     private func notifyStatus() { statusObservers.forEach { $0() } }
+    private func notifyTraffic() { trafficObservers.forEach { $0() } }
     private func notifyLog() { logObservers.forEach { $0() } }
     private func notifyRecover() { recoverObservers.forEach { $0() } }
 
     private let interval: TimeInterval = 45
+    private let trafficInterval: TimeInterval = 3
     private var timer: Timer?
+    private var trafficTimer: Timer?
+    private var previousTraffic: TrafficStats?
     private let queue = DispatchQueue(label: "warp.daemon", qos: .utility)
 
     func start() {
         log("WARP Monitor started - interval \(Int(interval))s - target NRT", tag: .info)
         pollAsync()
+        pollTrafficAsync()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.pollAsync()
+        }
+        trafficTimer = Timer.scheduledTimer(withTimeInterval: trafficInterval, repeats: true) { [weak self] _ in
+            self?.pollTrafficAsync()
         }
     }
 
@@ -120,6 +186,10 @@ final class WarpDaemon {
 
     func pollAsync() {
         queue.async { [weak self] in self?.poll() }
+    }
+
+    func pollTrafficAsync() {
+        queue.async { [weak self] in self?.pollTraffic() }
     }
 
     func requestRecover() {
@@ -152,6 +222,58 @@ final class WarpDaemon {
         return s.isEmpty ? "unknown" : s
     }
 
+    private func probeTraffic() -> TrafficStats {
+        let now = Date()
+        let raw = Shell.run("warp-cli --json tunnel stats")
+        guard let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let bytesSent = uint64Value(json["bytes_sent"]),
+              let bytesReceived = uint64Value(json["bytes_received"]) else {
+            return .empty(at: now)
+        }
+
+        let latency = intValue(json["estimated_latency_ms"])
+        var uploadBps: Double?
+        var downloadBps: Double?
+        if let previousTraffic,
+           let previousSent = previousTraffic.bytesSent,
+           let previousReceived = previousTraffic.bytesReceived,
+           let previousTimestamp = previousTraffic.timestamp {
+            let seconds = now.timeIntervalSince(previousTimestamp)
+            if seconds > 0 && bytesSent >= previousSent && bytesReceived >= previousReceived {
+                uploadBps = Double(bytesSent - previousSent) / seconds
+                downloadBps = Double(bytesReceived - previousReceived) / seconds
+            }
+        }
+
+        return TrafficStats(bytesSent: bytesSent,
+                            bytesReceived: bytesReceived,
+                            uploadBps: uploadBps,
+                            downloadBps: downloadBps,
+                            latencyMs: latency,
+                            timestamp: now)
+    }
+
+    private func uint64Value(_ value: Any?) -> UInt64? {
+        if let number = value as? NSNumber {
+            return number.uint64Value
+        }
+        if let string = value as? String {
+            return UInt64(string)
+        }
+        return nil
+    }
+
+    private func intValue(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        if let string = value as? String {
+            return Int(string)
+        }
+        return nil
+    }
+
     private func poll() {
         let new = WarpStatus(warp: probeWarp(), sr: probeSR(), colo: probeColo(), timestamp: Date())
         DispatchQueue.main.async {
@@ -162,6 +284,15 @@ final class WarpDaemon {
                 self.log("unhealthy: \(new.levelText) -> auto recover", tag: .warn)
                 self.requestRecover()
             }
+        }
+    }
+
+    private func pollTraffic() {
+        let new = probeTraffic()
+        previousTraffic = (new.bytesSent == nil || new.bytesReceived == nil) ? nil : new
+        DispatchQueue.main.async {
+            self.traffic = new
+            self.notifyTraffic()
         }
     }
 
@@ -533,6 +664,9 @@ final class PanelViewController: NSViewController {
     private let warpValue = label("...", size: 12, mono: true)
     private let srValue = label("...", size: 12, mono: true)
     private let coloValue = label("...", size: 12, mono: true)
+    private let latencyValue = label("--", size: 12, mono: true)
+    private let realtimeValue = label("--", size: 12, mono: true)
+    private let cumulativeValue = label("--", size: 12, mono: true)
     private let checkedLabel = label("", size: 10, color: .tertiaryLabelColor)
     private var autoRecoverCheck: NSButton!
     private var recoverBtn: NSButton!
@@ -551,6 +685,7 @@ final class PanelViewController: NSViewController {
         self.daemon = daemon
         super.init(nibName: nil, bundle: nil)
         daemon.onStatusChange { [weak self] in self?.refreshStatus() }
+        daemon.onTrafficChange { [weak self] in self?.refreshTraffic() }
         daemon.onLogChange { [weak self] in self?.refreshLog() }
         daemon.onRecoverStateChange { [weak self] in self?.refreshRecoverState() }
     }
@@ -560,6 +695,7 @@ final class PanelViewController: NSViewController {
         view = NSView()
         buildUI()
         refreshStatus()
+        refreshTraffic()
         refreshLog()
     }
 
@@ -594,6 +730,9 @@ final class PanelViewController: NSViewController {
             detailRow("WARP", warpValue),
             detailRow("Shadowrocket", srValue),
             detailRow("Colo", coloValue),
+            detailRow("Latency", latencyValue),
+            detailRow("Realtime", realtimeValue),
+            detailRow("Cumulative", cumulativeValue),
         ])
         detailStack.orientation = .vertical
         detailStack.alignment = .leading
@@ -759,6 +898,20 @@ final class PanelViewController: NSViewController {
         checkedLabel.stringValue = "Last checked \(timeFmt.string(from: s.timestamp))"
     }
 
+    private func refreshTraffic() {
+        let t = daemon.traffic
+        latencyValue.stringValue = t.latencyText
+        if let latency = t.latencyMs {
+            latencyValue.textColor = latency < 150 ? .systemGreen : (latency < 300 ? .systemOrange : .systemRed)
+        } else {
+            latencyValue.textColor = .secondaryLabelColor
+        }
+        realtimeValue.stringValue = t.rateText
+        realtimeValue.textColor = t.uploadBps == nil ? .secondaryLabelColor : .labelColor
+        cumulativeValue.stringValue = t.totalText
+        cumulativeValue.textColor = t.bytesSent == nil ? .secondaryLabelColor : .labelColor
+    }
+
     private func refreshRecoverState() {
         recoverBtn.title = daemon.recovering ? "Recovering..." : "Recover now"
         recoverBtn.isEnabled = !daemon.recovering
@@ -791,6 +944,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow?
     var statusItem: NSStatusItem!
     private var menuStatusLine: NSMenuItem!
+    private var menuLatencyLine: NSMenuItem!
+    private var menuRealtimeLine: NSMenuItem!
+    private var menuCumulativeLine: NSMenuItem!
     private var menuRecover: NSMenuItem!
     private var menuAutoRecover: NSMenuItem!
 
@@ -800,6 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildWindow()
         buildStatusItem()
         daemon.onStatusChange { [weak self] in self?.refreshStatusItem() }
+        daemon.onTrafficChange { [weak self] in self?.refreshTrafficItems() }
         daemon.onRecoverStateChange { [weak self] in self?.refreshStatusItem() }
         daemon.start()
     }
@@ -829,6 +986,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuStatusLine = NSMenuItem(title: "Checking...", action: nil, keyEquivalent: "")
         menuStatusLine.isEnabled = false
         menu.addItem(menuStatusLine)
+        menuLatencyLine = NSMenuItem(title: "Latency: --", action: nil, keyEquivalent: "")
+        menuLatencyLine.isEnabled = false
+        menu.addItem(menuLatencyLine)
+        menuRealtimeLine = NSMenuItem(title: "Realtime: --", action: nil, keyEquivalent: "")
+        menuRealtimeLine.isEnabled = false
+        menu.addItem(menuRealtimeLine)
+        menuCumulativeLine = NSMenuItem(title: "Cumulative: --", action: nil, keyEquivalent: "")
+        menuCumulativeLine.isEnabled = false
+        menu.addItem(menuCumulativeLine)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open WARP Monitor", action: #selector(openPanel), keyEquivalent: "o"))
         menuRecover = NSMenuItem(title: "Recover Now", action: #selector(menuRecoverNow), keyEquivalent: "r")
@@ -857,6 +1023,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuRecover.title = daemon.recovering ? "Recovering..." : "Recover Now"
         menuRecover.isEnabled = !daemon.recovering
         menuAutoRecover.state = daemon.autoRecover ? .on : .off
+        refreshTrafficItems()
+    }
+
+    private func refreshTrafficItems() {
+        guard menuLatencyLine != nil else { return }
+        let t = daemon.traffic
+        menuLatencyLine.title = "Latency: \(t.latencyText)"
+        menuRealtimeLine.title = "Realtime: \(t.rateText)"
+        menuCumulativeLine.title = "Cumulative: \(t.totalText)"
     }
 
     // MARK: menu actions
