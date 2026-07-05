@@ -33,6 +33,15 @@ struct WarpStatus {
         case .unknown:   return "Checking..."
         }
     }
+    var headlineText: String {
+        switch level {
+        case .healthy:   return "Connected"
+        case .wrongColo: return "Wrong colo"
+        case .srStillOn: return "Connected - SR on"
+        case .warpOff:   return "WARP disconnected"
+        case .unknown:   return "Checking..."
+        }
+    }
     var levelColor: NSColor {
         switch level {
         case .healthy:   return .systemGreen
@@ -681,7 +690,6 @@ final class PanelViewController: NSViewController {
     private let dot = StatusDotView()
     private let liveDot = StatusDotView()
     private let stateLabel = label("Checking...", size: 17, weight: .semibold)
-    private let coloBig = label("--", size: 34, weight: .bold, mono: true)
     private let warpValue = label("...", size: 12, mono: true)
     private let srValue = label("...", size: 12, mono: true)
     private let coloValue = label("...", size: 12, mono: true)
@@ -731,15 +739,8 @@ final class PanelViewController: NSViewController {
         stateStack.alignment = .leading
         stateStack.spacing = 3
 
-        let coloCap = label("colo", size: 10, color: .secondaryLabelColor)
-        coloCap.alignment = .center
-        let coloStack = NSStackView(views: [coloBig, coloCap])
-        coloStack.orientation = .vertical
-        coloStack.alignment = .centerX
-        coloStack.spacing = 0
-
         let headerCard = CardView()
-        let headerStack = NSStackView(views: [dot, stateStack, NSView(), coloStack])
+        let headerStack = NSStackView(views: [dot, stateStack, NSView()])
         headerStack.orientation = .horizontal
         headerStack.alignment = .centerY
         headerStack.spacing = 12
@@ -971,10 +972,8 @@ final class PanelViewController: NSViewController {
     private func refreshStatus() {
         let s = daemon.status
         dot.color = s.levelColor
-        stateLabel.stringValue = s.levelText
+        stateLabel.stringValue = s.headlineText
         stateLabel.textColor = s.levelColor
-        coloBig.stringValue = s.colo == "unknown" ? "--" : s.colo
-        coloBig.textColor = s.coloOK ? .systemGreen : (s.colo == "unknown" ? .tertiaryLabelColor : .systemOrange)
         warpValue.stringValue = s.warp
         warpValue.textColor = s.warpOK ? .systemGreen : (s.warp == "unknown" ? .secondaryLabelColor : .systemRed)
         srValue.stringValue = s.sr == "Connected" ? "on" : s.srOff ? "off" : "unknown"
