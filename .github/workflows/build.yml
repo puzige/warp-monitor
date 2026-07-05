@@ -1,0 +1,36 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos-dmg:
+    name: macOS DMG
+    runs-on: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build release executable
+        run: swift build -c release
+
+      - name: Build app bundle
+        run: Scripts/build_app.sh
+
+      - name: Create DMG
+        run: Scripts/create_dmg.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WARP-Monitor-dmg
+          path: dist/WARP-Monitor.dmg
+          if-no-files-found: error
