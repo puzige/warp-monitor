@@ -679,6 +679,7 @@ final class PanelViewController: NSViewController {
     let daemon: WarpDaemon
 
     private let dot = StatusDotView()
+    private let liveDot = StatusDotView()
     private let stateLabel = label("Checking...", size: 17, weight: .semibold)
     private let coloBig = label("--", size: 34, weight: .bold, mono: true)
     private let warpValue = label("...", size: 12, mono: true)
@@ -748,7 +749,13 @@ final class PanelViewController: NSViewController {
 
         // Traffic card: two large live dashboard metrics, with quiet session context.
         let trafficCard = CardView()
+        liveDot.color = .systemGreen
+        liveDot.translatesAutoresizingMaskIntoConstraints = false
         let liveCap = label("live traffic", size: 10, color: .secondaryLabelColor)
+        let liveHeader = NSStackView(views: [liveDot, liveCap])
+        liveHeader.orientation = .horizontal
+        liveHeader.alignment = .centerY
+        liveHeader.spacing = 5
         let uploadTile = trafficMetric("↑ Upload", uploadRateValue)
         let downloadTile = trafficMetric("↓ Download", downloadRateValue)
         let liveGrid = NSStackView(views: [uploadTile, downloadTile])
@@ -766,13 +773,20 @@ final class PanelViewController: NSViewController {
         totalLine.alignment = .firstBaseline
         totalLine.spacing = 10
 
-        let trafficStack = NSStackView(views: [liveCap, liveGrid, totalLine])
+        let trafficStack = NSStackView(views: [liveHeader, liveGrid, totalLine])
         trafficStack.orientation = .vertical
         trafficStack.alignment = .leading
         trafficStack.spacing = 8
         trafficStack.translatesAutoresizingMaskIntoConstraints = false
         trafficCard.addSubview(trafficStack)
         pin(trafficStack, in: trafficCard, inset: 14)
+        liveDot.widthAnchor.constraint(equalToConstant: 10).isActive = true
+        liveDot.heightAnchor.constraint(equalToConstant: 10).isActive = true
+        uploadRateValue.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        downloadRateValue.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        uploadTotalValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        downloadTotalValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        latencyValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
         uploadTile.widthAnchor.constraint(equalTo: downloadTile.widthAnchor).isActive = true
 
         // Detail card: WARP / SR / colo rows.
@@ -913,6 +927,7 @@ final class PanelViewController: NSViewController {
         r.alignment = .leading
         r.spacing = 2
         r.translatesAutoresizingMaskIntoConstraints = false
+        value.alignment = .left
         value.textColor = .labelColor
         return r
     }
@@ -971,6 +986,7 @@ final class PanelViewController: NSViewController {
 
     private func refreshTraffic() {
         let t = daemon.traffic
+        liveDot.color = (t.uploadBps == nil && t.downloadBps == nil) ? .systemGray : .systemGreen
         latencyValue.stringValue = t.latencyText
         if let latency = t.latencyMs {
             latencyValue.textColor = latency < 150 ? .systemGreen : (latency < 300 ? .systemOrange : .systemRed)
