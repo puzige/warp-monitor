@@ -63,12 +63,12 @@ struct TrafficStats {
 
     var totalText: String {
         guard let bytesSent, let bytesReceived else { return "--" }
-        return "Up \(Self.formatBytes(bytesSent)) / Down \(Self.formatBytes(bytesReceived))"
+        return "↑\(Self.formatBytes(bytesSent))  ↓\(Self.formatBytes(bytesReceived))"
     }
 
     var rateText: String {
         guard let uploadBps, let downloadBps else { return "--" }
-        return "Up \(Self.formatRate(uploadBps)) / Down \(Self.formatRate(downloadBps))"
+        return "↑\(Self.formatRate(uploadBps))  ↓\(Self.formatRate(downloadBps))"
     }
 
     var latencyText: String {
@@ -724,15 +724,40 @@ final class PanelViewController: NSViewController {
         headerCard.addSubview(headerStack)
         pin(headerStack, in: headerCard, inset: 14)
 
+        // Traffic card: realtime first, secondary metrics below it.
+        realtimeValue.font = .monospacedSystemFont(ofSize: 17, weight: .semibold)
+        latencyValue.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+        cumulativeValue.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+
+        let trafficCard = CardView()
+        let liveCap = label("live traffic", size: 10, color: .secondaryLabelColor)
+        let liveStack = NSStackView(views: [liveCap, realtimeValue])
+        liveStack.orientation = .vertical
+        liveStack.alignment = .leading
+        liveStack.spacing = 4
+
+        let metricsStack = NSStackView(views: [
+            compactMetricRow("Total", cumulativeValue),
+            compactMetricRow("Latency", latencyValue),
+        ])
+        metricsStack.orientation = .vertical
+        metricsStack.alignment = .trailing
+        metricsStack.spacing = 5
+
+        let trafficStack = NSStackView(views: [liveStack, NSView(), metricsStack])
+        trafficStack.orientation = .horizontal
+        trafficStack.alignment = .centerY
+        trafficStack.spacing = 12
+        trafficStack.translatesAutoresizingMaskIntoConstraints = false
+        trafficCard.addSubview(trafficStack)
+        pin(trafficStack, in: trafficCard, inset: 14)
+
         // Detail card: WARP / SR / colo rows.
         let detailCard = CardView()
         let detailStack = NSStackView(views: [
             detailRow("WARP", warpValue),
             detailRow("Shadowrocket", srValue),
             detailRow("Colo", coloValue),
-            detailRow("Latency", latencyValue),
-            detailRow("Realtime", realtimeValue),
-            detailRow("Cumulative", cumulativeValue),
         ])
         detailStack.orientation = .vertical
         detailStack.alignment = .leading
@@ -797,7 +822,7 @@ final class PanelViewController: NSViewController {
         logScroll.isHidden = true
 
         // Root.
-        let root = NSStackView(views: [headerCard, detailCard, controls, logHeader, logScroll])
+        let root = NSStackView(views: [headerCard, trafficCard, detailCard, controls, logHeader, logScroll])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 12
@@ -818,6 +843,7 @@ final class PanelViewController: NSViewController {
             dot.widthAnchor.constraint(equalToConstant: 44),
             dot.heightAnchor.constraint(equalToConstant: 44),
             headerCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            trafficCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             detailCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             logHeader.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
@@ -854,6 +880,18 @@ final class PanelViewController: NSViewController {
         r.spacing = 4
         r.translatesAutoresizingMaskIntoConstraints = false
         n.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        return r
+    }
+
+    private func compactMetricRow(_ name: String, _ value: NSTextField) -> NSStackView {
+        let n = label(name, size: 10, color: .secondaryLabelColor)
+        let r = NSStackView(views: [n, value])
+        r.orientation = .horizontal
+        r.alignment = .firstBaseline
+        r.spacing = 8
+        r.translatesAutoresizingMaskIntoConstraints = false
+        n.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        value.alignment = .right
         return r
     }
 
