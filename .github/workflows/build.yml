@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Show Swift version
         run: swift --version
@@ -29,7 +29,7 @@ jobs:
         run: Scripts/create_dmg.sh
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WARP-Monitor-dmg
           path: dist/WARP-Monitor.dmg
