@@ -3,16 +3,37 @@ import Foundation
 
 // MARK: - Models
 
+enum ColoTarget {
+    static let any = "Any"
+    static let defaultValue = "SJC"
+    static let options = ["SJC", "NRT", "SIN", any]
+
+    static func normalized(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.caseInsensitiveCompare(any) == .orderedSame { return any }
+        let upper = trimmed.uppercased()
+        return options.contains(upper) ? upper : defaultValue
+    }
+
+    static func isEnforced(_ value: String) -> Bool {
+        normalized(value) != any
+    }
+}
+
 struct WarpStatus {
     var warp: String
     var sr: String
     var colo: String
     var timestamp: Date
 
-    var coloOK: Bool { colo == "NRT" }
+    var coloOK: Bool { coloOK(targetColo: ColoTarget.defaultValue) }
     var warpOK: Bool { warp == "Connected" }
     var srOff: Bool { sr == "Disconnected" }
     var healthy: Bool { warpOK && coloOK && srOff }
+
+    func coloOK(targetColo: String) -> Bool {
+        !ColoTarget.isEnforced(targetColo) || colo == ColoTarget.normalized(targetColo)
+    }
 
     enum Level: Int {
         case healthy, wrongColo, srStillOn, warpOff, unknown
@@ -24,25 +45,26 @@ struct WarpStatus {
         if !srOff { return .srStillOn }
         return .healthy
     }
-    func level(forceNRT: Bool) -> Level {
+    func level(targetColo: String) -> Level {
         if warp == "unknown" && colo == "unknown" { return .unknown }
         if !warpOK { return .warpOff }
-        if forceNRT && !coloOK { return .wrongColo }
+        if !coloOK(targetColo: targetColo) { return .wrongColo }
         if !srOff { return .srStillOn }
         return .healthy
     }
     var levelText: String {
-        levelText(forceNRT: true)
+        levelText(targetColo: ColoTarget.defaultValue)
     }
-    func levelText(forceNRT: Bool) -> String {
-        switch level(forceNRT: forceNRT) {
+    func levelText(targetColo: String) -> String {
+        let target = ColoTarget.normalized(targetColo)
+        switch level(targetColo: target) {
         case .healthy:
-            if forceNRT { return "Connected - NRT" }
+            if ColoTarget.isEnforced(target) { return "Connected - \(target)" }
             return colo == "unknown" ? "Connected" : "Connected - \(colo)"
         case .wrongColo:
-            return "Wrong colo (\(colo))"
+            return "Wrong colo (\(colo) -> \(target))"
         case .srStillOn:
-            return forceNRT ? "NRT ok - SR still on" : "Connected - SR still on"
+            return ColoTarget.isEnforced(target) ? "\(target) ok - SR still on" : "Connected - SR still on"
         case .warpOff:
             return "WARP disconnected"
         case .unknown:
@@ -50,10 +72,10 @@ struct WarpStatus {
         }
     }
     var headlineText: String {
-        headlineText(forceNRT: true)
+        headlineText(targetColo: ColoTarget.defaultValue)
     }
-    func headlineText(forceNRT: Bool) -> String {
-        switch level(forceNRT: forceNRT) {
+    func headlineText(targetColo: String) -> String {
+        switch level(targetColo: targetColo) {
         case .healthy: return "Connected"
         case .wrongColo: return "Wrong colo"
         case .srStillOn: return "Connected - SR on"
@@ -62,10 +84,10 @@ struct WarpStatus {
         }
     }
     var levelColor: NSColor {
-        levelColor(forceNRT: true)
+        levelColor(targetColo: ColoTarget.defaultValue)
     }
-    func levelColor(forceNRT: Bool) -> NSColor {
-        switch level(forceNRT: forceNRT) {
+    func levelColor(targetColo: String) -> NSColor {
+        switch level(targetColo: targetColo) {
         case .healthy:   return .systemGreen
         case .wrongColo: return .systemOrange
         case .srStillOn: return .systemYellow
@@ -249,7 +271,7 @@ final class WarpDaemon {
     private(set) var recovering = false
 
     var autoRecover = true
-    private(set) var forceNRT = true
+    private(set) var targetColo = ColoTarget.defaultValue
     private var statusObservers: [() -> Void] = []
     private var trafficObservers: [() -> Void] = []
     private var logObservers: [() -> Void] = []
@@ -271,7 +293,7 @@ final class WarpDaemon {
     private let queue = DispatchQueue(label: "warp.daemon", qos: .utility)
 
     func start() {
-        log("WARP Monitor started - interval \(Int(interval))s - target NRT", tag: .info)
+        log("WARP Monitor started - interval \(Int(interval))s - target \(targetColo)", tag: .info)
         pollAsync()
         pollTrafficAsync()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
@@ -295,10 +317,11 @@ final class WarpDaemon {
         notifyLog()
     }
 
-    func setForceNRT(_ enabled: Bool) {
-        guard forceNRT != enabled else { return }
-        forceNRT = enabled
-        log("force NRT \(enabled ? "enabled" : "disabled")", tag: .info)
+    func setTargetColo(_ colo: String) {
+        let next = ColoTarget.normalized(colo)
+        guard targetColo != next else { return }
+        targetColo = next
+        log("target colo -> \(next)", tag: .info)
         notifyStatus()
     }
 
@@ -452,10 +475,10 @@ final class WarpDaemon {
         DispatchQueue.main.async {
             self.status = new
             self.notifyStatus()
-            let level = new.level(forceNRT: self.forceNRT)
+            let level = new.level(targetColo: self.targetColo)
             if self.autoRecover && !self.recovering
                 && (level == .warpOff || level == .wrongColo) {
-                self.log("unhealthy: \(new.levelText(forceNRT: self.forceNRT)) -> auto recover", tag: .warn)
+                self.log("unhealthy: \(new.levelText(targetColo: self.targetColo)) -> auto recover", tag: .warn)
                 self.requestRecover()
             }
         }
@@ -505,17 +528,19 @@ final class WarpDaemon {
         _ = Shell.run("warp-cli disconnect >/dev/null 2>&1")
     }
 
-    /// Strictly mirrors scripts/warp_to_nrt.sh:
+    /// Mirrors the original warp_to_nrt.sh flow, but checks the selected target colo.
     ///   0. reset: SR off (wait), WARP off
     ///   1. SR on (wait Connected) -> sleep 5
     ///   2. warp-cli connect -> sleep 5 -> wait Connected
-    ///   3. check colo; != NRT -> full reset
+    ///   3. check colo; target mismatch -> full reset
     ///   4. SR off (wait) -> wait WARP auto-reconnect (60s) -> settle 8s
-    ///   5. check colo; != NRT -> full reset
+    ///   5. check colo; target mismatch -> full reset
     ///   6. SUCCESS
     private func runRecover() {
         let maxAttempts = 20
-        log("recover: target SR=off + colo=NRT - max \(maxAttempts) attempts", tag: .action)
+        let target = targetColo
+        let enforceTarget = ColoTarget.isEnforced(target)
+        log("recover: target SR=off + colo=\(target) - max \(maxAttempts) attempts", tag: .action)
         for i in 1...maxAttempts {
             let p = "[\(i)/\(maxAttempts)]"
 
@@ -545,12 +570,13 @@ final class WarpDaemon {
 
             let colo = probeColo()
             log("\(p) [3] SR=on WARP=Connected colo=\(colo)", tag: .info)
-            guard colo == "NRT" else {
-                log("\(p) colo=\(colo) != NRT -> full reset", tag: .warn)
+            guard !enforceTarget || colo == target else {
+                log("\(p) colo=\(colo) != \(target) -> full reset", tag: .warn)
                 continue
             }
 
-            log("\(p) [4] NRT with SR=on - SR off, wait WARP auto-reconnect", tag: .success)
+            let targetText = enforceTarget ? "\(target) with SR=on" : "target accepted with SR=on"
+            log("\(p) [4] \(targetText) - SR off, wait WARP auto-reconnect", tag: .success)
             srSet(.off)
             if !waitSR("Disconnected", timeout: 20) {
                 log("\(p) SR still \(probeSR())", tag: .warn)
@@ -563,12 +589,12 @@ final class WarpDaemon {
 
             let coloOff = probeColo()
             log("\(p) [5] SR=off WARP=Connected colo=\(coloOff)", tag: .info)
-            guard coloOff == "NRT" else {
+            guard !enforceTarget || coloOff == target else {
                 log("\(p) drifted to \(coloOff) under SR off -> full reset", tag: .warn)
                 continue
             }
 
-            log("recover: SUCCESS - SR=off - colo=NRT", tag: .success)
+            log("recover: SUCCESS - SR=off - colo=\(coloOff)", tag: .success)
             poll()
             return
         }
@@ -880,7 +906,7 @@ final class PanelViewController: NSViewController {
     private let detailsCard = CardView()
     private var trafficVisible = false
     private var autoRecoverSwitch: NSSwitch!
-    private var forceNRTSwitch: NSSwitch!
+    private var targetColoPopup: NSPopUpButton!
     private var recoverBtn: NSButton!
     private var detailsDisclosure: NSButton!
     private let logView = NSTextView()
@@ -974,11 +1000,13 @@ final class PanelViewController: NSViewController {
         autoRecoverSwitch.state = daemon.autoRecover ? .on : .off
         autoRecoverSwitch.controlSize = .small
 
-        forceNRTSwitch = NSSwitch()
-        forceNRTSwitch.target = self
-        forceNRTSwitch.action = #selector(toggleForceNRT)
-        forceNRTSwitch.state = daemon.forceNRT ? .on : .off
-        forceNRTSwitch.controlSize = .small
+        targetColoPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        targetColoPopup.addItems(withTitles: ColoTarget.options)
+        targetColoPopup.selectItem(withTitle: daemon.targetColo)
+        targetColoPopup.target = self
+        targetColoPopup.action = #selector(changeTargetColo)
+        targetColoPopup.controlSize = .small
+        targetColoPopup.translatesAutoresizingMaskIntoConstraints = false
 
         // Detail card: status rows.
         let detailCard = CardView()
@@ -998,7 +1026,7 @@ final class PanelViewController: NSViewController {
         let settingsCard = CardView()
         let settingsStack = NSStackView(views: [
             switchRow("Auto-recover", autoRecoverSwitch),
-            switchRow("NRT only", forceNRTSwitch),
+            controlRow("Target colo", targetColoPopup),
         ])
         settingsStack.orientation = .vertical
         settingsStack.alignment = .width
@@ -1120,6 +1148,7 @@ final class PanelViewController: NSViewController {
             detailsCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             logHeader.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            targetColoPopup.widthAnchor.constraint(equalToConstant: 92),
         ])
     }
 
@@ -1248,14 +1277,18 @@ final class PanelViewController: NSViewController {
     }
 
     private func switchRow(_ title: String, _ toggle: NSSwitch) -> NSStackView {
+        controlRow(title, toggle)
+    }
+
+    private func controlRow(_ title: String, _ control: NSView) -> NSStackView {
         let titleLabel = label(title, size: 12, color: .secondaryLabelColor)
-        let r = NSStackView(views: [titleLabel, NSView(), toggle])
+        let r = NSStackView(views: [titleLabel, NSView(), control])
         r.orientation = .horizontal
         r.alignment = .centerY
         r.spacing = 4
         r.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        toggle.setContentHuggingPriority(.required, for: .horizontal)
+        control.setContentHuggingPriority(.required, for: .horizontal)
         return r
     }
 
@@ -1278,8 +1311,8 @@ final class PanelViewController: NSViewController {
         daemon.autoRecover = autoRecoverSwitch.state == .on
         daemon.log("auto-recover \(daemon.autoRecover ? "enabled" : "disabled")", tag: .info)
     }
-    @objc private func toggleForceNRT() {
-        daemon.setForceNRT(forceNRTSwitch.state == .on)
+    @objc private func changeTargetColo() {
+        daemon.setTargetColo(targetColoPopup.titleOfSelectedItem ?? ColoTarget.defaultValue)
         refreshStatus()
     }
     @objc private func manualRecover() { daemon.requestRecover() }
@@ -1295,9 +1328,9 @@ final class PanelViewController: NSViewController {
 
     private func refreshStatus() {
         let s = daemon.status
-        dot.color = s.levelColor(forceNRT: daemon.forceNRT)
-        stateLabel.stringValue = s.headlineText(forceNRT: daemon.forceNRT)
-        stateLabel.textColor = s.levelColor(forceNRT: daemon.forceNRT)
+        dot.color = s.levelColor(targetColo: daemon.targetColo)
+        stateLabel.stringValue = s.headlineText(targetColo: daemon.targetColo)
+        stateLabel.textColor = s.levelColor(targetColo: daemon.targetColo)
         warpValue.stringValue = s.warp
         warpValue.textColor = s.warpOK ? .systemGreen : (s.warp == "unknown" ? .secondaryLabelColor : .systemRed)
         srValue.stringValue = s.sr == "Connected" ? "on" : s.srOff ? "off" : "unknown"
@@ -1306,10 +1339,10 @@ final class PanelViewController: NSViewController {
         if s.colo == "unknown" {
             coloValue.textColor = .secondaryLabelColor
         } else {
-            coloValue.textColor = (!daemon.forceNRT || s.coloOK) ? .systemGreen : .systemOrange
+            coloValue.textColor = s.coloOK(targetColo: daemon.targetColo) ? .systemGreen : .systemOrange
         }
         checkedLabel.stringValue = "Last checked \(timeFmt.string(from: s.timestamp))"
-        forceNRTSwitch?.state = daemon.forceNRT ? .on : .off
+        targetColoPopup?.selectItem(withTitle: daemon.targetColo)
         setTrafficCardVisible(s.warpOK, animated: view.window != nil)
     }
 
@@ -1347,7 +1380,7 @@ final class PanelViewController: NSViewController {
         recoverBtn.title = daemon.recovering ? "Recovering..." : "Recover now"
         recoverBtn.isEnabled = !daemon.recovering
         autoRecoverSwitch.state = daemon.autoRecover ? .on : .off
-        forceNRTSwitch.state = daemon.forceNRT ? .on : .off
+        targetColoPopup.selectItem(withTitle: daemon.targetColo)
         if daemon.recovering { setLogExpanded(true) }
         refreshStatus()
     }
@@ -1379,7 +1412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var menuRealtimeLine: NSMenuItem!
     private var menuRecover: NSMenuItem!
     private var menuAutoRecover: NSMenuItem!
-    private var menuForceNRT: NSMenuItem!
+    private var menuTargetItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1427,9 +1460,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuAutoRecover = NSMenuItem(title: "Auto-recover", action: #selector(menuToggleAutoRecover), keyEquivalent: "")
         menuAutoRecover.state = daemon.autoRecover ? .on : .off
         menu.addItem(menuAutoRecover)
-        menuForceNRT = NSMenuItem(title: "NRT only", action: #selector(menuToggleForceNRT), keyEquivalent: "")
-        menuForceNRT.state = daemon.forceNRT ? .on : .off
-        menu.addItem(menuForceNRT)
+        let targetItem = NSMenuItem(title: "Target Colo", action: nil, keyEquivalent: "")
+        let targetMenu = NSMenu()
+        menuTargetItems = ColoTarget.options.map { target in
+            let item = NSMenuItem(title: target, action: #selector(menuSelectTargetColo), keyEquivalent: "")
+            item.representedObject = target
+            item.target = self
+            targetMenu.addItem(item)
+            return item
+        }
+        targetItem.submenu = targetMenu
+        menu.addItem(targetItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Refresh Status", action: #selector(menuRefresh), keyEquivalent: ""))
         menu.addItem(.separator())
@@ -1441,17 +1482,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func refreshStatusItem() {
         let s = daemon.status
         statusItem.button?.image = Logo.menuIcon(filled: s.warpOK)
-        switch s.level(forceNRT: daemon.forceNRT) {
+        switch s.level(targetColo: daemon.targetColo) {
         case .wrongColo:  statusItem.button?.title = " \(s.colo)"
         case .srStillOn:  statusItem.button?.title = " SR"
         default:          statusItem.button?.title = ""
         }
         let recovering = daemon.recovering ? " - recovering..." : ""
-        menuStatusLine.title = "\(s.levelText(forceNRT: daemon.forceNRT))\(recovering)"
+        menuStatusLine.title = "\(s.levelText(targetColo: daemon.targetColo))\(recovering)"
         menuRecover.title = daemon.recovering ? "Recovering..." : "Recover Now"
         menuRecover.isEnabled = !daemon.recovering
         menuAutoRecover.state = daemon.autoRecover ? .on : .off
-        menuForceNRT.state = daemon.forceNRT ? .on : .off
+        for item in menuTargetItems {
+            item.state = (item.representedObject as? String) == daemon.targetColo ? .on : .off
+        }
         refreshTrafficItems()
     }
 
@@ -1474,8 +1517,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         daemon.log("auto-recover \(daemon.autoRecover ? "enabled" : "disabled")", tag: .info)
         refreshStatusItem()
     }
-    @objc private func menuToggleForceNRT() {
-        daemon.setForceNRT(!daemon.forceNRT)
+    @objc private func menuSelectTargetColo(_ sender: NSMenuItem) {
+        daemon.setTargetColo((sender.representedObject as? String) ?? ColoTarget.defaultValue)
         refreshStatusItem()
     }
     @objc private func menuRefresh() { daemon.pollAsync() }
