@@ -81,6 +81,14 @@ struct TrafficStats {
     var uploadBps: Double?
     var downloadBps: Double?
     var latencyMs: Int?
+    var estimatedLoss: Double?
+    var handshakeSeconds: Int?
+    var protocolText: String?
+    var edgeMetal: String?
+    var tlsVersion: String?
+    var tlsCipher: String?
+    var tlsCurve: String?
+    var postQuantumEnabled: Bool?
     var timestamp: Date?
 
     static func empty(at timestamp: Date = Date()) -> TrafficStats {
@@ -89,6 +97,14 @@ struct TrafficStats {
                      uploadBps: nil,
                      downloadBps: nil,
                      latencyMs: nil,
+                     estimatedLoss: nil,
+                     handshakeSeconds: nil,
+                     protocolText: nil,
+                     edgeMetal: nil,
+                     tlsVersion: nil,
+                     tlsCipher: nil,
+                     tlsCurve: nil,
+                     postQuantumEnabled: nil,
                      timestamp: timestamp)
     }
 
@@ -127,6 +143,39 @@ struct TrafficStats {
         return "\(latencyMs) ms"
     }
 
+    var lossText: String {
+        guard let estimatedLoss else { return "--" }
+        let percent = max(0, estimatedLoss) * 100
+        if percent > 0 && percent < 0.01 { return "<0.01%" }
+        return String(format: "%.2f%%", percent)
+    }
+
+    var handshakeText: String {
+        guard let handshakeSeconds else { return "--" }
+        return Self.formatDuration(handshakeSeconds)
+    }
+
+    var protocolDisplayText: String { protocolText ?? "--" }
+
+    var edgeText: String {
+        guard let edgeMetal, !edgeMetal.isEmpty else { return "--" }
+        return edgeMetal
+    }
+
+    var tlsText: String {
+        let pieces = [tlsVersion, tlsCipher].compactMap { $0 }.filter { !$0.isEmpty }
+        return pieces.isEmpty ? "--" : pieces.joined(separator: " · ")
+    }
+
+    var postQuantumText: String {
+        guard let postQuantumEnabled else { return "--" }
+        if postQuantumEnabled {
+            guard let tlsCurve, !tlsCurve.isEmpty else { return "on" }
+            return "on · \(tlsCurve)"
+        }
+        return "off"
+    }
+
     private static func formatRate(_ bytesPerSecond: Double) -> String {
         let safeValue = max(0, bytesPerSecond)
         return "\(formatBytes(UInt64(safeValue.rounded())))/s"
@@ -147,6 +196,16 @@ struct TrafficStats {
             return String(format: "%.1f %@", value, units[unitIndex])
         }
         return String(format: "%.0f %@", value, units[unitIndex])
+    }
+
+    private static func formatDuration(_ seconds: Int) -> String {
+        let safeSeconds = max(0, seconds)
+        if safeSeconds < 60 { return "\(safeSeconds)s ago" }
+        let minutes = safeSeconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h \(minutes % 60)m ago" }
+        return "\(hours / 24)d ago"
     }
 }
 
@@ -292,6 +351,16 @@ final class WarpDaemon {
         }
 
         let latency = intValue(json["estimated_latency_ms"])
+        let loss = doubleValue(json["estimated_loss"])
+        let handshake = intValue(json["secs_since_last_handshake"])
+        let protocolText = stringValue(json["protocol"])
+        let edge = json["edge"] as? [String: Any]
+        let edgeMetal = stringValue(edge?["metal"])
+        let tls = json["tls"] as? [String: Any]
+        let tlsVersion = stringValue(tls?["version"])
+        let tlsCipher = stringValue(tls?["cipher"])
+        let tlsCurve = stringValue(tls?["curve"])
+        let pqEnabled = boolValue(tls?["post_quantum_enabled"])
         var uploadBps: Double?
         var downloadBps: Double?
         if let previousTraffic,
@@ -310,6 +379,14 @@ final class WarpDaemon {
                             uploadBps: uploadBps,
                             downloadBps: downloadBps,
                             latencyMs: latency,
+                            estimatedLoss: loss,
+                            handshakeSeconds: handshake,
+                            protocolText: protocolText,
+                            edgeMetal: edgeMetal,
+                            tlsVersion: tlsVersion,
+                            tlsCipher: tlsCipher,
+                            tlsCurve: tlsCurve,
+                            postQuantumEnabled: pqEnabled,
                             timestamp: now)
     }
 
@@ -329,6 +406,43 @@ final class WarpDaemon {
         }
         if let string = value as? String {
             return Int(string)
+        }
+        return nil
+    }
+
+    private func doubleValue(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber {
+            return number.doubleValue
+        }
+        if let string = value as? String {
+            return Double(string)
+        }
+        return nil
+    }
+
+    private func stringValue(_ value: Any?) -> String? {
+        if let string = value as? String {
+            return string.isEmpty ? nil : string
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
+    }
+
+    private func boolValue(_ value: Any?) -> Bool? {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        if let string = value as? String {
+            switch string.lowercased() {
+            case "true", "yes", "1": return true
+            case "false", "no", "0": return false
+            default: return nil
+            }
         }
         return nil
     }
@@ -728,18 +842,27 @@ final class PanelViewController: NSViewController {
     private let uploadTotalValue = label("--", size: 11, mono: true)
     private let downloadTotalValue = label("--", size: 11, mono: true)
     private let latencyValue = label("--", size: 12, mono: true)
+    private let lossValue = label("--", size: 11, mono: true)
+    private let handshakeValue = label("--", size: 11, mono: true)
+    private let protocolValue = label("--", size: 11, mono: true)
+    private let edgeValue = label("--", size: 11, mono: true)
+    private let tlsValue = label("--", size: 11, mono: true)
+    private let pqValue = label("--", size: 11, mono: true)
     private let checkedLabel = label("", size: 10, color: .tertiaryLabelColor)
     private let trafficCard = CardView()
+    private let detailsCard = CardView()
     private var trafficVisible = false
     private var autoRecoverSwitch: NSSwitch!
     private var forceNRTSwitch: NSSwitch!
     private var recoverBtn: NSButton!
+    private var detailsDisclosure: NSButton!
     private let logView = NSTextView()
     private let logScroll = NSScrollView()
     private var logDisclosure: NSButton!
     private var clearBtn: NSButton!
     private var logHeightC: NSLayoutConstraint!
     private var logWidthC: NSLayoutConstraint!
+    private var detailsExpanded = false
     private var logExpanded = false
     private let timeFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
@@ -855,6 +978,39 @@ final class PanelViewController: NSViewController {
         settingsCard.addSubview(settingsStack)
         pin(settingsStack, in: settingsCard, inset: 14)
 
+        // Details stats (collapsible, hidden by default).
+        detailsDisclosure = NSButton()
+        detailsDisclosure.setButtonType(.pushOnPushOff)
+        detailsDisclosure.bezelStyle = .disclosure
+        detailsDisclosure.title = ""
+        detailsDisclosure.state = .off
+        detailsDisclosure.target = self
+        detailsDisclosure.action = #selector(toggleDetailsSection)
+
+        let detailsCap = label("Details", size: 11, color: .secondaryLabelColor)
+        let detailsHeader = NSStackView(views: [detailsDisclosure, detailsCap, NSView()])
+        detailsHeader.orientation = .horizontal
+        detailsHeader.alignment = .centerY
+        detailsHeader.spacing = 4
+        detailsHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        detailsCard.alphaValue = 0
+        detailsCard.isHidden = true
+        let detailsStack = NSStackView(views: [
+            detailRow("Loss", lossValue),
+            detailRow("Handshake", handshakeValue),
+            detailRow("Protocol", protocolValue),
+            detailRow("Edge", edgeValue),
+            detailRow("TLS", tlsValue),
+            detailRow("PQ", pqValue),
+        ])
+        detailsStack.orientation = .vertical
+        detailsStack.alignment = .width
+        detailsStack.spacing = 8
+        detailsStack.translatesAutoresizingMaskIntoConstraints = false
+        detailsCard.addSubview(detailsStack)
+        pin(detailsStack, in: detailsCard, inset: 14)
+
         // Actions.
         recoverBtn = NSButton(title: "Recover now", target: self, action: #selector(manualRecover))
         recoverBtn.bezelStyle = .rounded
@@ -907,7 +1063,7 @@ final class PanelViewController: NSViewController {
         logScroll.isHidden = true
 
         // Root.
-        let root = NSStackView(views: [headerCard, trafficCard, detailCard, settingsCard, controls, logHeader, logScroll])
+        let root = NSStackView(views: [headerCard, trafficCard, detailCard, settingsCard, detailsHeader, detailsCard, controls, logHeader, logScroll])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 12
@@ -931,6 +1087,8 @@ final class PanelViewController: NSViewController {
             trafficCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             detailCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             settingsCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            detailsHeader.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            detailsCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             logHeader.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
         ])
@@ -950,6 +1108,30 @@ final class PanelViewController: NSViewController {
             logScroll.isHidden = true
         }
         resizeWindowToFit(animated: true)
+    }
+
+    private func setDetailsExpanded(_ expanded: Bool) {
+        guard detailsExpanded != expanded else { return }
+        detailsExpanded = expanded
+        detailsDisclosure.state = expanded ? .on : .off
+        if expanded {
+            detailsCard.isHidden = false
+            detailsCard.alphaValue = 0
+            refreshTraffic()
+            resizeWindowToFit(animated: true)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                detailsCard.animator().alphaValue = 1
+            }
+        } else {
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.14
+                detailsCard.animator().alphaValue = 0
+            }, completionHandler: {
+                self.detailsCard.isHidden = true
+                self.resizeWindowToFit(animated: true)
+            })
+        }
     }
 
     private func setTrafficCardVisible(_ visible: Bool, animated: Bool) {
@@ -1073,6 +1255,7 @@ final class PanelViewController: NSViewController {
         daemon.pollAsync()
     }
     @objc private func clearLog() { daemon.clearLog() }
+    @objc private func toggleDetailsSection() { setDetailsExpanded(detailsDisclosure.state == .on) }
     @objc private func toggleLogSection() { setLogExpanded(logDisclosure.state == .on) }
 
     // MARK: refresh
@@ -1113,6 +1296,18 @@ final class PanelViewController: NSViewController {
         uploadTotalValue.textColor = t.bytesSent == nil ? .secondaryLabelColor : .labelColor
         downloadTotalValue.stringValue = t.downloadTotalText
         downloadTotalValue.textColor = t.bytesReceived == nil ? .secondaryLabelColor : .labelColor
+        lossValue.stringValue = t.lossText
+        lossValue.textColor = t.estimatedLoss == nil ? .secondaryLabelColor : .labelColor
+        handshakeValue.stringValue = t.handshakeText
+        handshakeValue.textColor = t.handshakeSeconds == nil ? .secondaryLabelColor : .labelColor
+        protocolValue.stringValue = t.protocolDisplayText
+        protocolValue.textColor = t.protocolText == nil ? .secondaryLabelColor : .labelColor
+        edgeValue.stringValue = t.edgeText
+        edgeValue.textColor = t.edgeMetal == nil ? .secondaryLabelColor : .labelColor
+        tlsValue.stringValue = t.tlsText
+        tlsValue.textColor = t.tlsVersion == nil && t.tlsCipher == nil ? .secondaryLabelColor : .labelColor
+        pqValue.stringValue = t.postQuantumText
+        pqValue.textColor = t.postQuantumEnabled == nil ? .secondaryLabelColor : (t.postQuantumEnabled == true ? .systemGreen : .secondaryLabelColor)
     }
 
     private func refreshRecoverState() {
