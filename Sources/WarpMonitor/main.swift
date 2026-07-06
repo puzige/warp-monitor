@@ -1063,7 +1063,7 @@ final class PanelViewController: NSViewController {
         logScroll.isHidden = true
 
         // Root.
-        let root = NSStackView(views: [headerCard, trafficCard, detailCard, settingsCard, detailsHeader, detailsCard, controls, logHeader, logScroll])
+        let root = NSStackView(views: [headerCard, trafficCard, detailCard, settingsCard, detailsHeader, detailsCard, logHeader, logScroll, controls])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 12
