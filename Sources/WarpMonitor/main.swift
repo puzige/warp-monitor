@@ -24,26 +24,48 @@ struct WarpStatus {
         if !srOff { return .srStillOn }
         return .healthy
     }
+    func level(forceNRT: Bool) -> Level {
+        if warp == "unknown" && colo == "unknown" { return .unknown }
+        if !warpOK { return .warpOff }
+        if forceNRT && !coloOK { return .wrongColo }
+        if !srOff { return .srStillOn }
+        return .healthy
+    }
     var levelText: String {
-        switch level {
-        case .healthy:   return "Connected - NRT"
-        case .wrongColo: return "Wrong colo (\(colo))"
-        case .srStillOn: return "NRT ok - SR still on"
-        case .warpOff:   return "WARP disconnected"
-        case .unknown:   return "Checking..."
+        levelText(forceNRT: true)
+    }
+    func levelText(forceNRT: Bool) -> String {
+        switch level(forceNRT: forceNRT) {
+        case .healthy:
+            if forceNRT { return "Connected - NRT" }
+            return colo == "unknown" ? "Connected" : "Connected - \(colo)"
+        case .wrongColo:
+            return "Wrong colo (\(colo))"
+        case .srStillOn:
+            return forceNRT ? "NRT ok - SR still on" : "Connected - SR still on"
+        case .warpOff:
+            return "WARP disconnected"
+        case .unknown:
+            return "Checking..."
         }
     }
     var headlineText: String {
-        switch level {
-        case .healthy:   return "Connected"
+        headlineText(forceNRT: true)
+    }
+    func headlineText(forceNRT: Bool) -> String {
+        switch level(forceNRT: forceNRT) {
+        case .healthy: return "Connected"
         case .wrongColo: return "Wrong colo"
         case .srStillOn: return "Connected - SR on"
-        case .warpOff:   return "WARP disconnected"
-        case .unknown:   return "Checking..."
+        case .warpOff: return "WARP disconnected"
+        case .unknown: return "Checking..."
         }
     }
     var levelColor: NSColor {
-        switch level {
+        levelColor(forceNRT: true)
+    }
+    func levelColor(forceNRT: Bool) -> NSColor {
+        switch level(forceNRT: forceNRT) {
         case .healthy:   return .systemGreen
         case .wrongColo: return .systemOrange
         case .srStillOn: return .systemYellow
@@ -168,6 +190,7 @@ final class WarpDaemon {
     private(set) var recovering = false
 
     var autoRecover = true
+    private(set) var forceNRT = true
     private var statusObservers: [() -> Void] = []
     private var trafficObservers: [() -> Void] = []
     private var logObservers: [() -> Void] = []
@@ -211,6 +234,13 @@ final class WarpDaemon {
     func clearLog() {
         logEntries.removeAll()
         notifyLog()
+    }
+
+    func setForceNRT(_ enabled: Bool) {
+        guard forceNRT != enabled else { return }
+        forceNRT = enabled
+        log("force NRT \(enabled ? "enabled" : "disabled")", tag: .info)
+        notifyStatus()
     }
 
     func pollAsync() {
@@ -308,9 +338,10 @@ final class WarpDaemon {
         DispatchQueue.main.async {
             self.status = new
             self.notifyStatus()
+            let level = new.level(forceNRT: self.forceNRT)
             if self.autoRecover && !self.recovering
-                && (new.level == .warpOff || new.level == .wrongColo) {
-                self.log("unhealthy: \(new.levelText) -> auto recover", tag: .warn)
+                && (level == .warpOff || level == .wrongColo) {
+                self.log("unhealthy: \(new.levelText(forceNRT: self.forceNRT)) -> auto recover", tag: .warn)
                 self.requestRecover()
             }
         }
@@ -688,7 +719,6 @@ final class PanelViewController: NSViewController {
     let daemon: WarpDaemon
 
     private let dot = StatusDotView()
-    private let liveDot = StatusDotView()
     private let stateLabel = label("Checking...", size: 17, weight: .semibold)
     private let warpValue = label("...", size: 12, mono: true)
     private let srValue = label("...", size: 12, mono: true)
@@ -699,7 +729,10 @@ final class PanelViewController: NSViewController {
     private let downloadTotalValue = label("--", size: 11, mono: true)
     private let latencyValue = label("--", size: 12, mono: true)
     private let checkedLabel = label("", size: 10, color: .tertiaryLabelColor)
-    private var autoRecoverCheck: NSButton!
+    private let trafficCard = CardView()
+    private var trafficVisible = false
+    private var autoRecoverSwitch: NSSwitch!
+    private var forceNRTSwitch: NSSwitch!
     private var recoverBtn: NSButton!
     private let logView = NSTextView()
     private let logScroll = NSScrollView()
@@ -749,14 +782,8 @@ final class PanelViewController: NSViewController {
         pin(headerStack, in: headerCard, inset: 14)
 
         // Traffic card: two large live dashboard metrics, with quiet session context.
-        let trafficCard = CardView()
-        liveDot.color = .systemGreen
-        liveDot.translatesAutoresizingMaskIntoConstraints = false
-        let liveCap = label("live traffic", size: 10, color: .secondaryLabelColor)
-        let liveHeader = NSStackView(views: [liveDot, liveCap])
-        liveHeader.orientation = .horizontal
-        liveHeader.alignment = .centerY
-        liveHeader.spacing = 5
+        trafficCard.alphaValue = 0
+        trafficCard.isHidden = true
         let uploadTile = trafficMetric("↑ Upload", uploadRateValue)
         let downloadTile = trafficMetric("↓ Download", downloadRateValue)
         let liveGrid = NSStackView(views: [uploadTile, downloadTile])
@@ -774,15 +801,13 @@ final class PanelViewController: NSViewController {
         totalLine.alignment = .firstBaseline
         totalLine.spacing = 10
 
-        let trafficStack = NSStackView(views: [liveHeader, liveGrid, totalLine])
+        let trafficStack = NSStackView(views: [liveGrid, totalLine])
         trafficStack.orientation = .vertical
         trafficStack.alignment = .leading
         trafficStack.spacing = 8
         trafficStack.translatesAutoresizingMaskIntoConstraints = false
         trafficCard.addSubview(trafficStack)
         pin(trafficStack, in: trafficCard, inset: 14)
-        liveDot.widthAnchor.constraint(equalToConstant: 10).isActive = true
-        liveDot.heightAnchor.constraint(equalToConstant: 10).isActive = true
         uploadRateValue.widthAnchor.constraint(equalToConstant: 118).isActive = true
         downloadRateValue.widthAnchor.constraint(equalToConstant: 118).isActive = true
         uploadTotalValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
@@ -805,10 +830,19 @@ final class PanelViewController: NSViewController {
         pin(detailStack, in: detailCard, inset: 14)
 
         // Controls.
-        autoRecoverCheck = NSButton(checkboxWithTitle: "Auto-recover",
-                                    target: self, action: #selector(toggleAutoRecover))
-        autoRecoverCheck.state = daemon.autoRecover ? .on : .off
-        autoRecoverCheck.font = .systemFont(ofSize: 12)
+        autoRecoverSwitch = NSSwitch()
+        autoRecoverSwitch.target = self
+        autoRecoverSwitch.action = #selector(toggleAutoRecover)
+        autoRecoverSwitch.state = daemon.autoRecover ? .on : .off
+        autoRecoverSwitch.controlSize = .small
+        let autoRecoverControl = switchControl("Auto-recover", autoRecoverSwitch)
+
+        forceNRTSwitch = NSSwitch()
+        forceNRTSwitch.target = self
+        forceNRTSwitch.action = #selector(toggleForceNRT)
+        forceNRTSwitch.state = daemon.forceNRT ? .on : .off
+        forceNRTSwitch.controlSize = .small
+        let forceNRTControl = switchControl("NRT only", forceNRTSwitch)
 
         recoverBtn = NSButton(title: "Recover now", target: self, action: #selector(manualRecover))
         recoverBtn.bezelStyle = .rounded
@@ -817,7 +851,7 @@ final class PanelViewController: NSViewController {
         let refreshBtn = NSButton(title: "Refresh", target: self, action: #selector(manualRefresh))
         refreshBtn.bezelStyle = .rounded
 
-        let controls = NSStackView(views: [autoRecoverCheck, NSView(), refreshBtn, recoverBtn])
+        let controls = NSStackView(views: [autoRecoverControl, forceNRTControl, NSView(), refreshBtn, recoverBtn])
         controls.orientation = .horizontal
         controls.spacing = 8
         controls.translatesAutoresizingMaskIntoConstraints = false
@@ -901,13 +935,57 @@ final class PanelViewController: NSViewController {
             NSLayoutConstraint.deactivate([logHeightC, logWidthC])
             logScroll.isHidden = true
         }
+        resizeWindowToFit(animated: true)
+    }
+
+    private func setTrafficCardVisible(_ visible: Bool, animated: Bool) {
+        guard trafficVisible != visible else { return }
+        trafficVisible = visible
+
+        if visible {
+            trafficCard.isHidden = false
+            trafficCard.alphaValue = 0
+            resizeWindowToFit(animated: animated)
+            guard animated else {
+                trafficCard.alphaValue = 1
+                return
+            }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                trafficCard.animator().alphaValue = 1
+            }
+        } else {
+            let finish = {
+                self.trafficCard.isHidden = true
+                self.resizeWindowToFit(animated: animated)
+            }
+            guard animated else {
+                trafficCard.alphaValue = 0
+                finish()
+                return
+            }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.16
+                trafficCard.animator().alphaValue = 0
+            }, completionHandler: finish)
+        }
+    }
+
+    private func resizeWindowToFit(animated: Bool) {
         view.layoutSubtreeIfNeeded()
-        if let w = view.window {
-            var f = w.frame
-            let dh = view.fittingSize.height - w.contentRect(forFrameRect: f).height
-            f.size.height += dh
-            f.origin.y -= dh
-            w.setFrame(f, display: true, animate: true)
+        guard let w = view.window else { return }
+        var f = w.frame
+        let dh = view.fittingSize.height - w.contentRect(forFrameRect: f).height
+        guard abs(dh) > 0.5 else { return }
+        f.size.height += dh
+        f.origin.y -= dh
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.20
+                w.animator().setFrame(f, display: true)
+            }
+        } else {
+            w.setFrame(f, display: true, animate: false)
         }
     }
 
@@ -944,6 +1022,18 @@ final class PanelViewController: NSViewController {
         return r
     }
 
+    private func switchControl(_ title: String, _ toggle: NSSwitch) -> NSStackView {
+        let titleLabel = label(title, size: 12, color: .labelColor)
+        let r = NSStackView(views: [titleLabel, toggle])
+        r.orientation = .horizontal
+        r.alignment = .centerY
+        r.spacing = 6
+        r.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        toggle.setContentHuggingPriority(.required, for: .horizontal)
+        return r
+    }
+
     private func pin(_ inner: NSView, in outer: NSView, inset: CGFloat) {
         NSLayoutConstraint.activate([
             inner.leadingAnchor.constraint(equalTo: outer.leadingAnchor, constant: inset),
@@ -956,8 +1046,12 @@ final class PanelViewController: NSViewController {
     // MARK: actions
 
     @objc private func toggleAutoRecover() {
-        daemon.autoRecover = autoRecoverCheck.state == .on
+        daemon.autoRecover = autoRecoverSwitch.state == .on
         daemon.log("auto-recover \(daemon.autoRecover ? "enabled" : "disabled")", tag: .info)
+    }
+    @objc private func toggleForceNRT() {
+        daemon.setForceNRT(forceNRTSwitch.state == .on)
+        refreshStatus()
     }
     @objc private func manualRecover() { daemon.requestRecover() }
     @objc private func manualRefresh() {
@@ -971,21 +1065,26 @@ final class PanelViewController: NSViewController {
 
     private func refreshStatus() {
         let s = daemon.status
-        dot.color = s.levelColor
-        stateLabel.stringValue = s.headlineText
-        stateLabel.textColor = s.levelColor
+        dot.color = s.levelColor(forceNRT: daemon.forceNRT)
+        stateLabel.stringValue = s.headlineText(forceNRT: daemon.forceNRT)
+        stateLabel.textColor = s.levelColor(forceNRT: daemon.forceNRT)
         warpValue.stringValue = s.warp
         warpValue.textColor = s.warpOK ? .systemGreen : (s.warp == "unknown" ? .secondaryLabelColor : .systemRed)
         srValue.stringValue = s.sr == "Connected" ? "on" : s.srOff ? "off" : "unknown"
         srValue.textColor = s.srOff ? .systemGreen : (s.sr == "Connected" ? .systemOrange : .secondaryLabelColor)
         coloValue.stringValue = s.colo
-        coloValue.textColor = s.coloOK ? .systemGreen : .systemOrange
+        if s.colo == "unknown" {
+            coloValue.textColor = .secondaryLabelColor
+        } else {
+            coloValue.textColor = (!daemon.forceNRT || s.coloOK) ? .systemGreen : .systemOrange
+        }
         checkedLabel.stringValue = "Last checked \(timeFmt.string(from: s.timestamp))"
+        forceNRTSwitch?.state = daemon.forceNRT ? .on : .off
+        setTrafficCardVisible(s.warpOK, animated: view.window != nil)
     }
 
     private func refreshTraffic() {
         let t = daemon.traffic
-        liveDot.color = (t.uploadBps == nil && t.downloadBps == nil) ? .systemGray : .systemGreen
         latencyValue.stringValue = t.latencyText
         if let latency = t.latencyMs {
             latencyValue.textColor = latency < 150 ? .systemGreen : (latency < 300 ? .systemOrange : .systemRed)
@@ -1005,7 +1104,8 @@ final class PanelViewController: NSViewController {
     private func refreshRecoverState() {
         recoverBtn.title = daemon.recovering ? "Recovering..." : "Recover now"
         recoverBtn.isEnabled = !daemon.recovering
-        autoRecoverCheck.state = daemon.autoRecover ? .on : .off
+        autoRecoverSwitch.state = daemon.autoRecover ? .on : .off
+        forceNRTSwitch.state = daemon.forceNRT ? .on : .off
         if daemon.recovering { setLogExpanded(true) }
         refreshStatus()
     }
@@ -1037,6 +1137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var menuRealtimeLine: NSMenuItem!
     private var menuRecover: NSMenuItem!
     private var menuAutoRecover: NSMenuItem!
+    private var menuForceNRT: NSMenuItem!
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1084,6 +1185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuAutoRecover = NSMenuItem(title: "Auto-recover", action: #selector(menuToggleAutoRecover), keyEquivalent: "")
         menuAutoRecover.state = daemon.autoRecover ? .on : .off
         menu.addItem(menuAutoRecover)
+        menuForceNRT = NSMenuItem(title: "NRT only", action: #selector(menuToggleForceNRT), keyEquivalent: "")
+        menuForceNRT.state = daemon.forceNRT ? .on : .off
+        menu.addItem(menuForceNRT)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Refresh Status", action: #selector(menuRefresh), keyEquivalent: ""))
         menu.addItem(.separator())
@@ -1095,16 +1199,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func refreshStatusItem() {
         let s = daemon.status
         statusItem.button?.image = Logo.menuIcon(filled: s.warpOK)
-        switch s.level {
+        switch s.level(forceNRT: daemon.forceNRT) {
         case .wrongColo:  statusItem.button?.title = " \(s.colo)"
         case .srStillOn:  statusItem.button?.title = " SR"
         default:          statusItem.button?.title = ""
         }
         let recovering = daemon.recovering ? " - recovering..." : ""
-        menuStatusLine.title = "\(s.levelText)\(recovering)"
+        menuStatusLine.title = "\(s.levelText(forceNRT: daemon.forceNRT))\(recovering)"
         menuRecover.title = daemon.recovering ? "Recovering..." : "Recover Now"
         menuRecover.isEnabled = !daemon.recovering
         menuAutoRecover.state = daemon.autoRecover ? .on : .off
+        menuForceNRT.state = daemon.forceNRT ? .on : .off
         refreshTrafficItems()
     }
 
@@ -1125,6 +1230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func menuToggleAutoRecover() {
         daemon.autoRecover.toggle()
         daemon.log("auto-recover \(daemon.autoRecover ? "enabled" : "disabled")", tag: .info)
+        refreshStatusItem()
+    }
+    @objc private func menuToggleForceNRT() {
+        daemon.setForceNRT(!daemon.forceNRT)
         refreshStatusItem()
     }
     @objc private func menuRefresh() { daemon.pollAsync() }
