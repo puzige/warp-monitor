@@ -799,6 +799,33 @@ func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
     return l
 }
 
+final class CenteredTextFieldCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        var drawingRect = super.drawingRect(forBounds: rect)
+        let textSize = cellSize(forBounds: rect)
+        if drawingRect.height > textSize.height {
+            drawingRect.origin.y += floor((drawingRect.height - textSize.height) / 2)
+            drawingRect.size.height = textSize.height
+        }
+        return drawingRect
+    }
+}
+
+func metricValueLabel(_ text: String, size: CGFloat, weight: NSFont.Weight) -> NSTextField {
+    let l = NSTextField(frame: .zero)
+    l.cell = CenteredTextFieldCell(textCell: text)
+    l.isEditable = false
+    l.isSelectable = false
+    l.isBordered = false
+    l.drawsBackground = false
+    l.font = .monospacedSystemFont(ofSize: size, weight: weight)
+    l.textColor = .labelColor
+    l.lineBreakMode = .byClipping
+    l.maximumNumberOfLines = 1
+    l.translatesAutoresizingMaskIntoConstraints = false
+    return l
+}
+
 final class CardView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -837,8 +864,8 @@ final class PanelViewController: NSViewController {
     private let warpValue = label("...", size: 12, mono: true)
     private let srValue = label("...", size: 12, mono: true)
     private let coloValue = label("...", size: 12, mono: true)
-    private let uploadRateValue = label("--", size: 21, weight: .bold, mono: true)
-    private let downloadRateValue = label("--", size: 21, weight: .bold, mono: true)
+    private let uploadRateValue = metricValueLabel("--", size: 21, weight: .bold)
+    private let downloadRateValue = metricValueLabel("--", size: 21, weight: .bold)
     private let uploadTotalValue = label("--", size: 11, mono: true)
     private let downloadTotalValue = label("--", size: 11, mono: true)
     private let latencyValue = label("--", size: 12, mono: true)
@@ -927,12 +954,14 @@ final class PanelViewController: NSViewController {
         let trafficStack = NSStackView(views: [liveGrid, totalLine])
         trafficStack.orientation = .vertical
         trafficStack.alignment = .leading
-        trafficStack.spacing = 8
+        trafficStack.spacing = 2
         trafficStack.translatesAutoresizingMaskIntoConstraints = false
         trafficCard.addSubview(trafficStack)
-        pin(trafficStack, in: trafficCard, inset: 14)
+        pin(trafficStack, in: trafficCard, insets: NSEdgeInsets(top: 15, left: 14, bottom: 15, right: 14))
         uploadRateValue.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        uploadRateValue.heightAnchor.constraint(equalToConstant: 27).isActive = true
         downloadRateValue.widthAnchor.constraint(equalToConstant: 118).isActive = true
+        downloadRateValue.heightAnchor.constraint(equalToConstant: 27).isActive = true
         uploadTotalValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
         downloadTotalValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
         latencyValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
@@ -1200,7 +1229,7 @@ final class PanelViewController: NSViewController {
         let r = NSStackView(views: [n, value])
         r.orientation = .vertical
         r.alignment = .leading
-        r.spacing = 2
+        r.spacing = 5
         r.translatesAutoresizingMaskIntoConstraints = false
         value.alignment = .left
         value.textColor = .labelColor
@@ -1231,11 +1260,15 @@ final class PanelViewController: NSViewController {
     }
 
     private func pin(_ inner: NSView, in outer: NSView, inset: CGFloat) {
+        pin(inner, in: outer, insets: NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset))
+    }
+
+    private func pin(_ inner: NSView, in outer: NSView, insets: NSEdgeInsets) {
         NSLayoutConstraint.activate([
-            inner.leadingAnchor.constraint(equalTo: outer.leadingAnchor, constant: inset),
-            inner.trailingAnchor.constraint(equalTo: outer.trailingAnchor, constant: -inset),
-            inner.topAnchor.constraint(equalTo: outer.topAnchor, constant: inset),
-            inner.bottomAnchor.constraint(equalTo: outer.bottomAnchor, constant: -inset),
+            inner.leadingAnchor.constraint(equalTo: outer.leadingAnchor, constant: insets.left),
+            inner.trailingAnchor.constraint(equalTo: outer.trailingAnchor, constant: -insets.right),
+            inner.topAnchor.constraint(equalTo: outer.topAnchor, constant: insets.top),
+            inner.bottomAnchor.constraint(equalTo: outer.bottomAnchor, constant: -insets.bottom),
         ])
     }
 
