@@ -954,7 +954,7 @@ final class PanelViewController: NSViewController {
         let trafficStack = NSStackView(views: [liveGrid, totalLine])
         trafficStack.orientation = .vertical
         trafficStack.alignment = .leading
-        trafficStack.spacing = 2
+        trafficStack.spacing = 3
         trafficStack.translatesAutoresizingMaskIntoConstraints = false
         trafficCard.addSubview(trafficStack)
         pin(trafficStack, in: trafficCard, insets: NSEdgeInsets(top: 15, left: 14, bottom: 15, right: 14))
