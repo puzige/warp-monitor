@@ -828,27 +828,32 @@ final class PanelViewController: NSViewController {
         forceNRTSwitch.state = daemon.forceNRT ? .on : .off
         forceNRTSwitch.controlSize = .small
 
-        // Detail card: status rows plus policy switches.
+        // Detail card: status rows.
         let detailCard = CardView()
-        let warpRow = detailRow("WARP", warpValue)
-        let srRow = detailRow("Shadowrocket", srValue)
-        let coloRow = detailRow("Colo", coloValue)
-        let autoRecoverRow = switchRow("Auto-recover", autoRecoverSwitch)
-        let forceNRTRow = switchRow("NRT only", forceNRTSwitch)
         let detailStack = NSStackView(views: [
-            warpRow,
-            srRow,
-            coloRow,
-            autoRecoverRow,
-            forceNRTRow,
+            detailRow("WARP", warpValue),
+            detailRow("Shadowrocket", srValue),
+            detailRow("Colo", coloValue),
         ])
         detailStack.orientation = .vertical
-        detailStack.alignment = .width
+        detailStack.alignment = .leading
         detailStack.spacing = 8
-        detailStack.setCustomSpacing(12, after: coloRow)
         detailStack.translatesAutoresizingMaskIntoConstraints = false
         detailCard.addSubview(detailStack)
         pin(detailStack, in: detailCard, inset: 14)
+
+        // Settings card: policy switches.
+        let settingsCard = CardView()
+        let settingsStack = NSStackView(views: [
+            switchRow("Auto-recover", autoRecoverSwitch),
+            switchRow("NRT only", forceNRTSwitch),
+        ])
+        settingsStack.orientation = .vertical
+        settingsStack.alignment = .width
+        settingsStack.spacing = 8
+        settingsStack.translatesAutoresizingMaskIntoConstraints = false
+        settingsCard.addSubview(settingsStack)
+        pin(settingsStack, in: settingsCard, inset: 14)
 
         // Actions.
         recoverBtn = NSButton(title: "Recover now", target: self, action: #selector(manualRecover))
@@ -902,7 +907,7 @@ final class PanelViewController: NSViewController {
         logScroll.isHidden = true
 
         // Root.
-        let root = NSStackView(views: [headerCard, trafficCard, detailCard, controls, logHeader, logScroll])
+        let root = NSStackView(views: [headerCard, trafficCard, detailCard, settingsCard, controls, logHeader, logScroll])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 12
@@ -925,6 +930,7 @@ final class PanelViewController: NSViewController {
             headerCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             trafficCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             detailCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            settingsCard.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             logHeader.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
         ])
