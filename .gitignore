@@ -3,4 +3,5 @@
 .swiftpm/
 DerivedData/
 dist/
+tmp/
 *.xcodeproj

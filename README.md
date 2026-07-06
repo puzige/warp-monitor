@@ -67,6 +67,21 @@ The executable can export quick PNG previews of the Dock and menu bar icons:
 `Scripts/build_app.sh` uses the same icon drawing code to generate the app
 bundle icon, so the packaged Dock icon stays in sync with the source.
 
+## CN Split Tunnel Helper
+
+To keep common mainland China traffic outside WARP, use the compact split tunnel
+helper:
+
+```sh
+Scripts/apply_cn_split_tunnel.sh        # dry run
+Scripts/apply_cn_split_tunnel.sh --apply
+```
+
+It downloads `mayaxcn/china-ip-list`, keeps IPv4 ranges at `/16` or larger and
+IPv6 ranges at `/24` or larger, then adds only the missing ranges to WARP. The
+script stores its managed state in `~/.warp-monitor/cn-split-tunnel` so future
+runs update only the ranges it owns.
+
 ## GitHub Actions
 
 `.github/workflows/build.yml` builds on macOS for push, pull request, and manual
