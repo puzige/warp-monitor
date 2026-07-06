@@ -851,8 +851,21 @@ final class PanelViewController: NSViewController {
         let refreshBtn = NSButton(title: "Refresh", target: self, action: #selector(manualRefresh))
         refreshBtn.bezelStyle = .rounded
 
-        let controls = NSStackView(views: [autoRecoverControl, forceNRTControl, NSView(), refreshBtn, recoverBtn])
-        controls.orientation = .horizontal
+        let settingControls = NSStackView(views: [autoRecoverControl, NSView(), forceNRTControl])
+        settingControls.orientation = .horizontal
+        settingControls.alignment = .centerY
+        settingControls.spacing = 18
+        settingControls.translatesAutoresizingMaskIntoConstraints = false
+
+        let actionControls = NSStackView(views: [NSView(), refreshBtn, recoverBtn])
+        actionControls.orientation = .horizontal
+        actionControls.alignment = .centerY
+        actionControls.spacing = 8
+        actionControls.translatesAutoresizingMaskIntoConstraints = false
+
+        let controls = NSStackView(views: [settingControls, actionControls])
+        controls.orientation = .vertical
+        controls.alignment = .width
         controls.spacing = 8
         controls.translatesAutoresizingMaskIntoConstraints = false
 
