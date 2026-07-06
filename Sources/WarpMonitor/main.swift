@@ -94,12 +94,12 @@ struct TrafficStats {
 
     var totalText: String {
         guard let bytesSent, let bytesReceived else { return "--" }
-        return "↑\(Self.formatBytes(bytesSent))  ↓\(Self.formatBytes(bytesReceived))"
+        return "↑ \(Self.formatBytes(bytesSent))  ↓ \(Self.formatBytes(bytesReceived))"
     }
 
     var rateText: String {
         guard let uploadBps, let downloadBps else { return "--" }
-        return "↑\(Self.formatRate(uploadBps))  ↓\(Self.formatRate(downloadBps))"
+        return "↑ \(Self.formatRate(uploadBps))  ↓ \(Self.formatRate(downloadBps))"
     }
 
     var uploadRateText: String {
