@@ -815,35 +815,42 @@ final class PanelViewController: NSViewController {
         latencyValue.widthAnchor.constraint(equalToConstant: 56).isActive = true
         uploadTile.widthAnchor.constraint(equalTo: downloadTile.widthAnchor).isActive = true
 
-        // Detail card: WARP / SR / colo rows.
-        let detailCard = CardView()
-        let detailStack = NSStackView(views: [
-            detailRow("WARP", warpValue),
-            detailRow("Shadowrocket", srValue),
-            detailRow("Colo", coloValue),
-        ])
-        detailStack.orientation = .vertical
-        detailStack.alignment = .leading
-        detailStack.spacing = 8
-        detailStack.translatesAutoresizingMaskIntoConstraints = false
-        detailCard.addSubview(detailStack)
-        pin(detailStack, in: detailCard, inset: 14)
-
-        // Controls.
+        // Settings.
         autoRecoverSwitch = NSSwitch()
         autoRecoverSwitch.target = self
         autoRecoverSwitch.action = #selector(toggleAutoRecover)
         autoRecoverSwitch.state = daemon.autoRecover ? .on : .off
         autoRecoverSwitch.controlSize = .small
-        let autoRecoverControl = switchControl("Auto-recover", autoRecoverSwitch)
 
         forceNRTSwitch = NSSwitch()
         forceNRTSwitch.target = self
         forceNRTSwitch.action = #selector(toggleForceNRT)
         forceNRTSwitch.state = daemon.forceNRT ? .on : .off
         forceNRTSwitch.controlSize = .small
-        let forceNRTControl = switchControl("NRT only", forceNRTSwitch)
 
+        // Detail card: status rows plus policy switches.
+        let detailCard = CardView()
+        let warpRow = detailRow("WARP", warpValue)
+        let srRow = detailRow("Shadowrocket", srValue)
+        let coloRow = detailRow("Colo", coloValue)
+        let autoRecoverRow = switchRow("Auto-recover", autoRecoverSwitch)
+        let forceNRTRow = switchRow("NRT only", forceNRTSwitch)
+        let detailStack = NSStackView(views: [
+            warpRow,
+            srRow,
+            coloRow,
+            autoRecoverRow,
+            forceNRTRow,
+        ])
+        detailStack.orientation = .vertical
+        detailStack.alignment = .width
+        detailStack.spacing = 8
+        detailStack.setCustomSpacing(12, after: coloRow)
+        detailStack.translatesAutoresizingMaskIntoConstraints = false
+        detailCard.addSubview(detailStack)
+        pin(detailStack, in: detailCard, inset: 14)
+
+        // Actions.
         recoverBtn = NSButton(title: "Recover now", target: self, action: #selector(manualRecover))
         recoverBtn.bezelStyle = .rounded
         recoverBtn.keyEquivalent = "\r"
@@ -851,21 +858,9 @@ final class PanelViewController: NSViewController {
         let refreshBtn = NSButton(title: "Refresh", target: self, action: #selector(manualRefresh))
         refreshBtn.bezelStyle = .rounded
 
-        let settingControls = NSStackView(views: [autoRecoverControl, NSView(), forceNRTControl])
-        settingControls.orientation = .horizontal
-        settingControls.alignment = .centerY
-        settingControls.spacing = 18
-        settingControls.translatesAutoresizingMaskIntoConstraints = false
-
-        let actionControls = NSStackView(views: [NSView(), refreshBtn, recoverBtn])
-        actionControls.orientation = .horizontal
-        actionControls.alignment = .centerY
-        actionControls.spacing = 8
-        actionControls.translatesAutoresizingMaskIntoConstraints = false
-
-        let controls = NSStackView(views: [settingControls, actionControls])
-        controls.orientation = .vertical
-        controls.alignment = .width
+        let controls = NSStackView(views: [NSView(), refreshBtn, recoverBtn])
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
         controls.spacing = 8
         controls.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1035,12 +1030,12 @@ final class PanelViewController: NSViewController {
         return r
     }
 
-    private func switchControl(_ title: String, _ toggle: NSSwitch) -> NSStackView {
-        let titleLabel = label(title, size: 12, color: .labelColor)
-        let r = NSStackView(views: [titleLabel, toggle])
+    private func switchRow(_ title: String, _ toggle: NSSwitch) -> NSStackView {
+        let titleLabel = label(title, size: 12, color: .secondaryLabelColor)
+        let r = NSStackView(views: [titleLabel, NSView(), toggle])
         r.orientation = .horizontal
         r.alignment = .centerY
-        r.spacing = 6
+        r.spacing = 4
         r.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         toggle.setContentHuggingPriority(.required, for: .horizontal)
