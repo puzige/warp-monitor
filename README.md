@@ -69,8 +69,24 @@ bundle icon, so the packaged Dock icon stays in sync with the source.
 
 ## CN Split Tunnel Helper
 
-To keep common mainland China traffic outside WARP, use the compact split tunnel
-helper:
+To keep common mainland China traffic outside WARP while leaving WARP DNS mode
+unchanged, run the one-shot bypass helper:
+
+```sh
+Scripts/apply_cn_warp_bypass.sh        # dry run
+Scripts/apply_cn_warp_bypass.sh --apply
+```
+
+It applies both recommended rule sets:
+
+- compact CN CIDR rules from `mayaxcn/china-ip-list`
+- CN domain host rules from `pluwen/china-domain-allowlist`
+
+The helper only changes WARP Split Tunnel IP and Host exclusions. It does not
+switch WARP to `tunnel_only`, because disabling WARP DNS can break resolution
+for some domains.
+
+If you want to update only the compact IP ranges:
 
 ```sh
 Scripts/apply_cn_split_tunnel.sh        # dry run
@@ -82,18 +98,16 @@ IPv6 ranges at `/24` or larger, then adds only the missing ranges to WARP. The
 script stores its managed state in `~/.warp-monitor/cn-split-tunnel` so future
 runs update only the ranges it owns.
 
-For common domestic services whose CDN IPs often live in smaller ranges, apply
-the host overlay:
+If you want to update only the domain host rules:
 
 ```sh
-Scripts/apply_cn_service_hosts.sh        # dry run
-Scripts/apply_cn_service_hosts.sh --apply
+Scripts/apply_pluwen_cn_hosts.sh        # dry run
+Scripts/apply_pluwen_cn_hosts.sh --apply
 ```
 
-The overlay adds wildcard host rules for services such as Bilibili, Tencent,
-WeChat, Douyin, Taobao/Tmall, JD, Baidu, NetEase, Xiaohongshu, Meituan, and
-Kuaishou. It is safe to re-run; existing hosts are skipped and failed additions
-are recorded under the same state directory.
+It downloads `pluwen/china-domain-allowlist`, converts wildcard entries into
+WARP host exclusions, and stores its managed state in
+`~/.warp-monitor/pluwen-cn-hosts` so future runs remove only stale hosts it owns.
 
 ## GitHub Actions
 
