@@ -82,6 +82,19 @@ IPv6 ranges at `/24` or larger, then adds only the missing ranges to WARP. The
 script stores its managed state in `~/.warp-monitor/cn-split-tunnel` so future
 runs update only the ranges it owns.
 
+For common domestic services whose CDN IPs often live in smaller ranges, apply
+the host overlay:
+
+```sh
+Scripts/apply_cn_service_hosts.sh        # dry run
+Scripts/apply_cn_service_hosts.sh --apply
+```
+
+The overlay adds wildcard host rules for services such as Bilibili, Tencent,
+WeChat, Douyin, Taobao/Tmall, JD, Baidu, NetEase, Xiaohongshu, Meituan, and
+Kuaishou. It is safe to re-run; existing hosts are skipped and failed additions
+are recorded under the same state directory.
+
 ## GitHub Actions
 
 `.github/workflows/build.yml` builds on macOS for push, pull request, and manual
