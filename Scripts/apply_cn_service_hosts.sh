@@ -136,6 +136,8 @@ ksapisrv.com
 *.ksapisrv.com
 gifshow.com
 *.gifshow.com
+futunn.com
+*.futunn.com
 EOF
 
 warp-cli tunnel host list > "$current_file"
