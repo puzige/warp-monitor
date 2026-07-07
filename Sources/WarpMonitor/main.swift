@@ -5,8 +5,8 @@ import Foundation
 
 enum ColoTarget {
     static let any = "Any"
-    static let defaultValue = "SJC"
-    static let options = ["SJC", "NRT", "SIN", any]
+    static let defaultValue = any
+    static let options = ["SJC", "NRT", "SIN", "LAX", any]
 
     static func normalized(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17,6 +17,31 @@ enum ColoTarget {
 
     static func isEnforced(_ value: String) -> Bool {
         normalized(value) != any
+    }
+}
+
+enum Settings {
+    private static let defaults = UserDefaults.standard
+    private static let keyTargetColo = "warp.targetColo"
+    private static let keyAutoRecover = "warp.autoRecover"
+    private static let keyDetailsExpanded = "warp.detailsExpanded"
+    private static let keyLogExpanded = "warp.logExpanded"
+
+    static var targetColo: String {
+        get { ColoTarget.normalized(defaults.string(forKey: keyTargetColo) ?? ColoTarget.defaultValue) }
+        set { defaults.set(newValue, forKey: keyTargetColo) }
+    }
+    static var autoRecover: Bool {
+        get { defaults.object(forKey: keyAutoRecover) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: keyAutoRecover) }
+    }
+    static var detailsExpanded: Bool {
+        get { defaults.bool(forKey: keyDetailsExpanded) }
+        set { defaults.set(newValue, forKey: keyDetailsExpanded) }
+    }
+    static var logExpanded: Bool {
+        get { defaults.bool(forKey: keyLogExpanded) }
+        set { defaults.set(newValue, forKey: keyLogExpanded) }
     }
 }
 
@@ -269,9 +294,13 @@ final class WarpDaemon {
     private(set) var traffic = TrafficStats.empty()
     private(set) var logEntries: [(Date, String, Tag)] = []
     private(set) var recovering = false
+    private let recoverCancelLock = NSLock()
+    private var recoverCancelled = false
 
-    var autoRecover = true
-    private(set) var targetColo = ColoTarget.defaultValue
+    var autoRecover = Settings.autoRecover {
+        didSet { Settings.autoRecover = autoRecover }
+    }
+    private(set) var targetColo = Settings.targetColo
     private var statusObservers: [() -> Void] = []
     private var trafficObservers: [() -> Void] = []
     private var logObservers: [() -> Void] = []
@@ -321,7 +350,9 @@ final class WarpDaemon {
         let next = ColoTarget.normalized(colo)
         guard targetColo != next else { return }
         targetColo = next
-        log("target colo -> \(next)", tag: .info)
+        Settings.targetColo = next
+        cancelRecover()
+        log("target colo -> \(next) - cancelling in-flight recover", tag: .warn)
         notifyStatus()
     }
 
@@ -336,6 +367,7 @@ final class WarpDaemon {
     func requestRecover() {
         guard !recovering else { return }
         recovering = true
+        resetRecoverCancel()
         notifyRecover()
         queue.async { [weak self] in
             self?.runRecover()
@@ -505,6 +537,7 @@ final class WarpDaemon {
     /// Poll until SR reaches `expected` state; 1s interval, like wait_sr in warp_to_nrt.sh.
     private func waitSR(_ expected: String, timeout: Int) -> Bool {
         for _ in 0..<timeout {
+            if isRecoverCancelled() { return false }
             if probeSR() == expected { return true }
             sleep(1)
         }
@@ -514,6 +547,7 @@ final class WarpDaemon {
     private func waitWarp(timeout: Int) -> Bool {
         var t = 0
         while t < timeout {
+            if isRecoverCancelled() { return false }
             if probeWarp() == "Connected" { return true }
             sleep(2); t += 2
         }
@@ -526,6 +560,35 @@ final class WarpDaemon {
     private func warpDisconnect() {
         log("  step: warp-cli disconnect", tag: .action)
         _ = Shell.run("warp-cli disconnect >/dev/null 2>&1")
+    }
+
+    private func cancelRecover() {
+        recoverCancelLock.lock()
+        recoverCancelled = true
+        recoverCancelLock.unlock()
+    }
+
+    private func resetRecoverCancel() {
+        recoverCancelLock.lock()
+        recoverCancelled = false
+        recoverCancelLock.unlock()
+    }
+
+    private func isRecoverCancelled() -> Bool {
+        recoverCancelLock.lock()
+        let v = recoverCancelled
+        recoverCancelLock.unlock()
+        return v
+    }
+
+    /// Sleep in 1s increments; returns false if recovery was cancelled.
+    @discardableResult
+    private func recoverSleep(_ seconds: Int) -> Bool {
+        for _ in 0..<seconds {
+            if isRecoverCancelled() { return false }
+            sleep(1)
+        }
+        return !isRecoverCancelled()
     }
 
     /// Mirrors the original warp_to_nrt.sh flow, but checks the selected target colo.
@@ -542,28 +605,65 @@ final class WarpDaemon {
         let enforceTarget = ColoTarget.isEnforced(target)
         log("recover: target SR=off + colo=\(target) - max \(maxAttempts) attempts", tag: .action)
         for i in 1...maxAttempts {
+            if isRecoverCancelled() {
+                log("recover: cancelled - target colo switched", tag: .warn)
+                poll()
+                return
+            }
             let p = "[\(i)/\(maxAttempts)]"
 
             log("\(p) [0] reset: SR off, WARP off", tag: .action)
             srSet(.off)
             if !waitSR("Disconnected", timeout: 15) {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) SR still \(probeSR()) after 15s", tag: .warn)
             }
-            warpDisconnect(); sleep(3)
-            sleep(2)
+            warpDisconnect()
+            if !recoverSleep(3) {
+                log("recover: cancelled - target colo switched", tag: .warn)
+                poll()
+                return
+            }
+            if !recoverSleep(2) {
+                log("recover: cancelled - target colo switched", tag: .warn)
+                poll()
+                return
+            }
 
             log("\(p) [1] SR on -> wait 5s", tag: .action)
             srSet(.on)
             guard waitSR("Connected", timeout: 20) else {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) SR still \(probeSR()) -> full reset", tag: .fail)
                 continue
             }
-            sleep(5)
+            if !recoverSleep(5) {
+                log("recover: cancelled - target colo switched", tag: .warn)
+                poll()
+                return
+            }
 
             log("\(p) [2] warp-cli connect -> wait 5s", tag: .action)
             warpConnect()
-            sleep(5)
+            if !recoverSleep(5) {
+                log("recover: cancelled - target colo switched", tag: .warn)
+                poll()
+                return
+            }
             guard waitWarp(timeout: 30) else {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) WARP not Connected after 30s -> full reset", tag: .fail)
                 continue
             }
@@ -571,6 +671,11 @@ final class WarpDaemon {
             let colo = probeColo()
             log("\(p) [3] SR=on WARP=Connected colo=\(colo)", tag: .info)
             guard !enforceTarget || colo == target else {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) colo=\(colo) != \(target) -> full reset", tag: .warn)
                 continue
             }
@@ -579,17 +684,36 @@ final class WarpDaemon {
             log("\(p) [4] \(targetText) - SR off, wait WARP auto-reconnect", tag: .success)
             srSet(.off)
             if !waitSR("Disconnected", timeout: 20) {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) SR still \(probeSR())", tag: .warn)
             }
             guard waitWarp(timeout: 60) else {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) WARP did not auto-reconnect within 60s -> full reset", tag: .fail)
                 continue
             }
-            sleep(8)
+            if !recoverSleep(8) {
+                log("recover: cancelled - target colo switched", tag: .warn)
+                poll()
+                return
+            }
 
             let coloOff = probeColo()
             log("\(p) [5] SR=off WARP=Connected colo=\(coloOff)", tag: .info)
             guard !enforceTarget || coloOff == target else {
+                if isRecoverCancelled() {
+                    log("recover: cancelled - target colo switched", tag: .warn)
+                    poll()
+                    return
+                }
                 log("\(p) drifted to \(coloOff) under SR off -> full reset", tag: .warn)
                 continue
             }
@@ -915,8 +1039,8 @@ final class PanelViewController: NSViewController {
     private var clearBtn: NSButton!
     private var logHeightC: NSLayoutConstraint!
     private var logWidthC: NSLayoutConstraint!
-    private var detailsExpanded = false
-    private var logExpanded = false
+    private var detailsExpanded = Settings.detailsExpanded
+    private var logExpanded = Settings.logExpanded
     private let timeFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
     }()
@@ -1040,7 +1164,7 @@ final class PanelViewController: NSViewController {
         detailsDisclosure.setButtonType(.pushOnPushOff)
         detailsDisclosure.bezelStyle = .disclosure
         detailsDisclosure.title = ""
-        detailsDisclosure.state = .off
+        detailsDisclosure.state = detailsExpanded ? .on : .off
         detailsDisclosure.target = self
         detailsDisclosure.action = #selector(toggleDetailsSection)
 
@@ -1087,7 +1211,7 @@ final class PanelViewController: NSViewController {
         logDisclosure.setButtonType(.pushOnPushOff)
         logDisclosure.bezelStyle = .disclosure
         logDisclosure.title = ""
-        logDisclosure.state = .off
+        logDisclosure.state = logExpanded ? .on : .off
         logDisclosure.target = self
         logDisclosure.action = #selector(toggleLogSection)
 
@@ -1155,6 +1279,7 @@ final class PanelViewController: NSViewController {
     private func setLogExpanded(_ expanded: Bool) {
         guard logExpanded != expanded else { return }
         logExpanded = expanded
+        Settings.logExpanded = expanded
         logDisclosure.state = expanded ? .on : .off
         clearBtn.isHidden = !expanded
         if expanded {
@@ -1171,6 +1296,7 @@ final class PanelViewController: NSViewController {
     private func setDetailsExpanded(_ expanded: Bool) {
         guard detailsExpanded != expanded else { return }
         detailsExpanded = expanded
+        Settings.detailsExpanded = expanded
         detailsDisclosure.state = expanded ? .on : .off
         if expanded {
             detailsCard.isHidden = false
